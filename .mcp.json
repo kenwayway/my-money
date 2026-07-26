@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "my-money": {
+      "command": "npx",
+      "args": ["tsx", "packages/server/src/mcp.ts"]
+    }
+  }
+}
