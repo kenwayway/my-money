@@ -28,6 +28,19 @@ export interface AccountWithBalance extends Account {
   balance_cents: number;
   balance_cad_cents: number;
   txn_count: number;
+  /** Where the balance anchor comes from: a manual snapshot or the opening balance. */
+  balance_source: "snapshot" | "opening";
+  /** Date of the snapshot anchoring the balance (null when anchored on opening balance). */
+  balance_as_of: string | null;
+}
+
+export interface BalanceSnapshot {
+  id: number;
+  account_id: number;
+  snapshot_date: string;
+  balance_cents: number;
+  note: string | null;
+  created_at: number;
 }
 
 export type CategoryType = "income" | "expense";

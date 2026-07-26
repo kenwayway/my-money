@@ -9,6 +9,9 @@
     "dev": "npm-run-all --parallel dev:server dev:web",
     "dev:server": "npm run dev -w packages/server",
     "dev:web": "npm run dev -w packages/web",
+    "dev:alt": "npm-run-all --parallel dev:server:alt dev:web:alt",
+    "dev:server:alt": "set PORT=4999&& set NO_OPEN=1&& npm run start -w packages/server",
+    "dev:web:alt": "set MY_MONEY_API_PORT=4999&& set MY_MONEY_WEB_PORT=5199&& npm run dev -w packages/web",
     "build": "npm run build -w packages/web && npm run build -w packages/server",
     "start": "npm run start -w packages/server"
   },

@@ -80,6 +80,22 @@ CREATE TABLE IF NOT EXISTS merchant_rules (
   UNIQUE(pattern, match_type)
 );
 
+-- Periodic balance snapshots. For investment/retirement accounts (Wealthsimple,
+-- IBKR, RRSP/TFSA) the market value moves without transactions, so the balance
+-- is anchored on the latest snapshot instead of a transaction ledger. Works for
+-- any account as a reconciliation anchor: balance = latest snapshot + Σ
+-- transactions after the snapshot date.
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  snapshot_date TEXT NOT NULL,
+  balance_cents INTEGER NOT NULL,
+  note TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(account_id, snapshot_date)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_acct_date ON balance_snapshots(account_id, snapshot_date DESC);
+
 CREATE TABLE IF NOT EXISTS fx_rates (
   currency TEXT PRIMARY KEY,
   rate_to_cad REAL NOT NULL,

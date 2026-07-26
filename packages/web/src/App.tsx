@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { LayoutDashboard, CreditCard, List, Upload, Settings as SettingsIcon, Wallet } from "lucide-react";
+import { LayoutDashboard, CreditCard, List, Upload, Settings as SettingsIcon, Wallet, Moon, Sun } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Accounts from "./pages/Accounts";
 import Transactions from "./pages/Transactions";
@@ -48,8 +48,15 @@ export default function App() {
     <div className="app-shell">
       <nav className="sidebar">
         <div className="brand">
-          <Wallet size={20} /> my-money
+          <span className="brand-mark">
+            <Wallet size={17} />
+          </span>
+          <span>
+            <div className="brand-name">my-money</div>
+            <div className="brand-sub">local · private</div>
+          </span>
         </div>
+        <hr className="sidebar-rule" />
         {NAV.map((n) => (
           <button key={n.key} className={`nav-item ${page === n.key ? "active" : ""}`} onClick={() => nav(n.key)}>
             {n.icon} {n.label}
@@ -57,7 +64,7 @@ export default function App() {
         ))}
         <div style={{ flex: 1 }} />
         <button className="nav-item" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-          {theme === "dark" ? "☀️ Light" : "🌙 Dark"}
+          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />} {theme === "dark" ? "Light mode" : "Dark mode"}
         </button>
       </nav>
       <main className="main">

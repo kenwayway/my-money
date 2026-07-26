@@ -35,11 +35,22 @@ AI 会调用这些工具：
 | `import_transactions` | **核心**：批量写入交易（带符号整数分，+收入/−支出）。自动去重——重叠账单随便重复导入；AI 给的分类会记成商户规则，下次同商户自动分类。可传账单期末余额（`statement_end_balance_cents`）自动对账，符号解析错误当场发现 |
 | `list_transactions` | 按账户/月份/分类/关键词查询 |
 | `set_category` | 修正分类（生成用户规则，可批量应用到同商户） |
+| `set_note` | 给交易加备注（账单描述看不出是什么时用） |
 | `mark_transfer` | 标记转账（信用卡还款、自转账），不计入支出 |
 | `link_transfer_pair` | 把两笔交易配对成同一笔内部转账的两侧（参考 `get_summary` 的配对建议） |
 | `get_summary` | 净资产（折 CAD）+ 月度分类支出 + 转账配对建议 |
 | `list_imports` / `undo_import` | 导入历史 / 一键撤销整批 |
 | `set_fx_rate` | 设置非 CAD 货币汇率 |
+| `set_balance_snapshot` / `list_balance_snapshots` | **投资/退休账户**（Wealthsimple、IBKR、RRSP/TFSA）：市值不走流水，定期记快照。跟 AI 说一句"我 TFSA 现在 $24,100"即可；净资产取最新快照 |
+
+## 投资 / 退休账户
+
+股票和退休账户不导交易流水（市值会自己波动，流水账模型不适用），用**快照模型**：
+
+- 建账户时选 `investment` 类型
+- 每月（或想起来时）更新一次当前市值——对 AI 说一句，或在 Accounts 页点 "Update value"
+- 净资产 = 最新快照；快照有历史，能看到市值变化
+- 从 chequing 转入的入金在 chequing 侧标为 Transfer（不算消费）；收益率等分析请用券商自己的界面，本工具只回答"总共有多少钱"
 
 MCP server 和 Web 界面共用同一个数据库（WAL 模式），可以同时运行——AI 导入完，刷新浏览器就能看到。
 

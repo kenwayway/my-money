@@ -37,7 +37,7 @@ export const transactionsRoute = new Hono()
     }
     if (q.uncategorized === "1") cond.push("t.category_id IS NULL");
     if (q.q) {
-      cond.push("(t.description_raw LIKE @search OR t.merchant_norm LIKE @search)");
+      cond.push("(t.description_raw LIKE @search OR t.merchant_norm LIKE @search OR t.notes LIKE @search)");
       params.search = `%${q.q}%`;
     }
     const limit = Math.min(Number(q.limit ?? 100), 500);

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeftRight, Search, Sparkles, Loader2 } from "lucide-react";
+import { ArrowLeftRight, Search, Sparkles, Loader2, StickyNote } from "lucide-react";
 import { api, fmtMoney, type AccountWithBalance, type Category, type TxnRow } from "../api";
+import { catEmoji } from "../categoryIcons";
+import MonthPicker from "../components/MonthPicker";
 
 interface Filters {
   account_id: string;
@@ -18,6 +20,8 @@ export default function Transactions() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [filters, setFilters] = useState<Filters>({ account_id: "", month: "", category_id: "", q: "", uncategorized: false });
   const [picker, setPicker] = useState<TxnRow | null>(null);
+  const [noteEdit, setNoteEdit] = useState<TxnRow | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState("");
   const limit = 100;
@@ -66,6 +70,18 @@ export default function Transactions() {
     load();
   };
 
+  const openNote = (txn: TxnRow) => {
+    setNoteDraft(txn.notes ?? "");
+    setNoteEdit(txn);
+  };
+
+  const saveNote = async () => {
+    if (!noteEdit) return;
+    await api.patch(`/transactions/${noteEdit.id}`, { notes: noteDraft.trim() || null });
+    setNoteEdit(null);
+    load();
+  };
+
   const toggleTransfer = async (txn: TxnRow) => {
     await api.patch(`/transactions/${txn.id}`, { is_transfer: txn.is_transfer ? 0 : 1 });
     load();
@@ -106,7 +122,7 @@ export default function Transactions() {
             </option>
           ))}
         </select>
-        <input type="month" value={filters.month} onChange={(e) => { setOffset(0); setFilters({ ...filters, month: e.target.value }); }} />
+        <MonthPicker value={filters.month} onChange={(m) => { setOffset(0); setFilters({ ...filters, month: m }); }} allowEmpty />
         <select value={filters.category_id} onChange={(e) => { setOffset(0); setFilters({ ...filters, category_id: e.target.value }); }}>
           <option value="">All categories</option>
           {categories.map((c) => (
@@ -127,7 +143,7 @@ export default function Transactions() {
           <Search size={14} style={{ position: "absolute", left: 9, top: 9, color: "var(--text-faint)" }} />
           <input
             style={{ paddingLeft: 28 }}
-            placeholder="Search description…"
+            placeholder="Search description / notes…"
             value={filters.q}
             onChange={(e) => { setOffset(0); setFilters({ ...filters, q: e.target.value }); }}
           />
@@ -150,20 +166,34 @@ export default function Transactions() {
             {rows.map((t) => (
               <tr key={t.id} style={t.is_transfer ? { opacity: 0.55 } : undefined}>
                 <td className="dim" style={{ whiteSpace: "nowrap" }}>{t.posted_date}</td>
-                <td title={t.description_raw} style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {t.description_raw}
-                  {t.is_transfer === 1 && <span className="badge" style={{ marginLeft: 6 }}>transfer</span>}
+                <td title={t.description_raw} style={{ maxWidth: 320 }}>
+                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t.description_raw}
+                    {t.is_transfer === 1 && <span className="badge" style={{ marginLeft: 6 }}>transfer</span>}
+                  </div>
+                  {t.notes && (
+                    <div className="faint" style={{ fontSize: 12, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.notes}>
+                      {t.notes}
+                    </div>
+                  )}
                 </td>
                 <td className="dim">{t.account_name}</td>
                 <td>
                   <button className="chip" style={t.category_color ? { background: `${t.category_color}22`, color: t.category_color } : {}} onClick={() => setPicker(t)}>
-                    {t.category_name ?? "— pick —"}
+                    {t.category_name ? `${catEmoji(t.category_icon)} ${t.category_name}` : "— pick —"}
                   </button>
                 </td>
                 <td className={`money ${t.amount_cents < 0 ? "" : "pos"}`} style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                   {fmtMoney(t.amount_cents, t.account_currency, true)}
                 </td>
-                <td>
+                <td style={{ whiteSpace: "nowrap" }}>
+                  <button
+                    title={t.notes ? `Edit note: ${t.notes}` : "Add note"}
+                    style={{ padding: "3px 7px", ...(t.notes ? { color: "var(--accent, #6366f1)" } : {}) }}
+                    onClick={() => openNote(t)}
+                  >
+                    <StickyNote size={12} />
+                  </button>{" "}
                   <button title={t.is_transfer ? "Unmark transfer" : "Mark as transfer (excluded from spending)"} style={{ padding: "3px 7px" }} onClick={() => toggleTransfer(t)}>
                     <ArrowLeftRight size={12} />
                   </button>
@@ -189,6 +219,35 @@ export default function Transactions() {
         </div>
       </div>
 
+      {noteEdit && (
+        <div className="modal-backdrop" onClick={() => setNoteEdit(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginBottom: 6 }}>Note</h2>
+            <div className="faint" style={{ marginBottom: 12 }}>
+              {noteEdit.posted_date} · {noteEdit.description_raw} · {fmtMoney(noteEdit.amount_cents, noteEdit.account_currency, true)}
+            </div>
+            <textarea
+              autoFocus
+              rows={3}
+              style={{ width: "100%", resize: "vertical" }}
+              placeholder="What was this? e.g. birthday gift for mom"
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveNote();
+                if (e.key === "Escape") setNoteEdit(null);
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+              <button onClick={() => setNoteEdit(null)}>Cancel</button>
+              <button className="primary" onClick={saveNote}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {picker && (
         <div className="modal-backdrop" onClick={() => setPicker(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -202,7 +261,7 @@ export default function Transactions() {
                   style={{ background: `${c.color}22`, color: c.color, fontWeight: picker.category_id === c.id ? 700 : 500 }}
                   onClick={() => setCategory(picker, c.id)}
                 >
-                  {c.name}
+                  {catEmoji(c.icon)} {c.name}
                 </button>
               ))}
               <button className="chip" onClick={() => setCategory(picker, null)}>

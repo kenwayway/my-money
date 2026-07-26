@@ -1,36 +1,67 @@
+/* ————————————————————————————————————————————————
+   my-money · "private ledger" theme
+   Light = warm paper & ink & forest green
+   Dark  = deep ink with the same green, brightened
+   ———————————————————————————————————————————————— */
+
 :root {
-  --bg: #f6f7f9;
-  --bg-card: #ffffff;
-  --bg-hover: #f0f1f4;
-  --bg-inset: #eceef1;
-  --border: #e3e5ea;
-  --text: #191c21;
-  --text-dim: #6b7280;
-  --text-faint: #9ca3af;
-  --accent: #4f46e5;
-  --accent-soft: #eef2ff;
-  --green: #16a34a;
-  --red: #dc2626;
-  --amber: #d97706;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow: 0 1px 3px rgba(16, 20, 28, 0.06), 0 1px 2px rgba(16, 20, 28, 0.04);
-  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --bg: #f4f1e9;
+  --bg-card: #fdfcf8;
+  --bg-hover: #eeeade;
+  --bg-inset: #ece8db;
+  --border: #e2dccc;
+  --border-strong: #cfc7b2;
+  --text: #221e15;
+  --text-dim: #6e6858;
+  --text-faint: #9c9583;
+  --accent: #1d6a50;
+  --accent-ink: #155140;
+  --accent-contrast: #f6f3e9;
+  --accent-soft: #e2ebe0;
+  --green: #1e7a56;
+  --red: #b0402a;
+  --amber: #96650a;
+  --amber-soft: #f3e8cf;
+  --red-soft: #f6e0d8;
+  --green-soft: #ddecdf;
+  --chart-income: #007a58;
+  --chart-expense: #d5763f;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(60, 50, 25, 0.05), 0 4px 14px rgba(60, 50, 25, 0.05);
+  --shadow-pop: 0 6px 16px rgba(45, 38, 20, 0.1), 0 24px 60px rgba(45, 38, 20, 0.18);
+  --ring: rgba(29, 106, 80, 0.25);
+
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "Instrument Sans", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "Spline Sans Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
 [data-theme="dark"] {
-  --bg: #12141a;
-  --bg-card: #1a1d26;
-  --bg-hover: #22262f;
-  --bg-inset: #22262f;
-  --border: #2c303b;
-  --text: #e7e9ee;
-  --text-dim: #9aa1ae;
-  --text-faint: #6b7280;
-  --accent: #818cf8;
-  --accent-soft: #26294a;
-  --green: #4ade80;
-  --red: #f87171;
-  --amber: #fbbf24;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --bg: #131510;
+  --bg-card: #1b1e17;
+  --bg-hover: #242820;
+  --bg-inset: #21251c;
+  --border: #2f342a;
+  --border-strong: #434a3b;
+  --text: #ebe8db;
+  --text-dim: #a49e8c;
+  --text-faint: #6e6a5b;
+  --accent: #74cfa3;
+  --accent-ink: #8fdcb5;
+  --accent-contrast: #10130e;
+  --accent-soft: #21332a;
+  --green: #62c795;
+  --red: #e07a5f;
+  --amber: #d5a545;
+  --amber-soft: #3a2f14;
+  --red-soft: #3e2018;
+  --green-soft: #1c3527;
+  --chart-income: #17907e;
+  --chart-expense: #c05c3c;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5), 0 32px 80px rgba(0, 0, 0, 0.55);
+  --ring: rgba(116, 207, 163, 0.3);
 }

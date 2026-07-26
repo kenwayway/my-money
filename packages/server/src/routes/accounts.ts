@@ -98,4 +98,41 @@ export const accountsRoute = new Hono()
     }
     db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
     return c.json({ deleted: true });
+  })
+  .get("/:id/snapshots", (c) => {
+    const id = Number(c.req.param("id"));
+    const rows = db
+      .prepare("SELECT * FROM balance_snapshots WHERE account_id = ? ORDER BY snapshot_date DESC LIMIT 60")
+      .all(id);
+    return c.json(rows);
+  })
+  .post(
+    "/:id/snapshots",
+    zValidator(
+      "json",
+      z.object({
+        snapshot_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        balance_cents: z.number().int(),
+        note: z.string().nullable().optional(),
+      })
+    ),
+    (c) => {
+      const id = Number(c.req.param("id"));
+      const account = db.prepare("SELECT id FROM accounts WHERE id = ?").get(id);
+      if (!account) return c.json({ error: "account not found" }, 404);
+      const b = c.req.valid("json");
+      db.prepare(
+        `INSERT INTO balance_snapshots (account_id, snapshot_date, balance_cents, note) VALUES (?, ?, ?, ?)
+         ON CONFLICT(account_id, snapshot_date) DO UPDATE SET balance_cents = excluded.balance_cents, note = excluded.note`
+      ).run(id, b.snapshot_date, b.balance_cents, b.note ?? null);
+      const row = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as unknown as Account;
+      return c.json(withBalance(row), 201);
+    }
+  )
+  .delete("/:id/snapshots/:date", (c) => {
+    db.prepare("DELETE FROM balance_snapshots WHERE account_id = ? AND snapshot_date = ?").run(
+      Number(c.req.param("id")),
+      c.req.param("date")
+    );
+    return c.json({ deleted: true });
   });

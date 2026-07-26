@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Trash2, Undo2, Plus } from "lucide-react";
 import { api, fmtMoney, type Category } from "../api";
+import { catEmoji } from "../categoryIcons";
 
 interface ImportRow {
   id: number;
@@ -168,7 +169,7 @@ export default function Settings() {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
             {categories.map((c) => (
               <span key={c.id} className="chip" style={{ background: `${c.color}22`, color: c.color, cursor: "default" }}>
-                {c.name}
+                {catEmoji(c.icon)} {c.name}
                 {!c.is_system && (
                   <Trash2
                     size={11}

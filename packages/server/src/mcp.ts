@@ -61,7 +61,7 @@ const TOOLS = [
   {
     name: "create_account",
     description:
-      "Create an account (a card). type 'credit' automatically becomes a liability. opening_balance_cents: the balance (signed integer cents) as of opening_balance_date; transactions dated after that date are added on top. For credit cards, money owed is negative.",
+      "Create an account (a card). type 'credit' automatically becomes a liability. opening_balance_cents: the balance (signed integer cents) as of opening_balance_date; transactions dated after that date are added on top. For credit cards, money owed is negative. For investment/retirement accounts (Wealthsimple, IBKR, RRSP/TFSA) use type 'investment' and track the value with set_balance_snapshot instead of importing transactions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,7 +130,7 @@ const TOOLS = [
         month: { type: "string", description: "YYYY-MM" },
         category: { type: "string", description: "Category name" },
         uncategorized_only: { type: "boolean" },
-        search: { type: "string", description: "Substring match on description" },
+        search: { type: "string", description: "Substring match on description or notes" },
         limit: { type: "integer", description: "Default 50, max 500" },
       },
       additionalProperties: false,
@@ -148,6 +148,20 @@ const TOOLS = [
         apply_to_same_merchant: { type: "boolean" },
       },
       required: ["transaction_id", "category"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "set_note",
+    description:
+      "Attach a free-text note to a transaction (or null to clear it). Useful when the statement description is cryptic — e.g. what an e-transfer or a generic 'POS PURCHASE' actually was.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        transaction_id: { type: "integer" },
+        note: { type: ["string", "null"] },
+      },
+      required: ["transaction_id", "note"],
       additionalProperties: false,
     },
   },
@@ -217,6 +231,35 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "set_balance_snapshot",
+    description:
+      "Record an account's balance as of a date. This is THE way to track investment/retirement accounts (Wealthsimple, IBKR, RRSP/TFSA): their market value moves without transactions, so instead of importing a ledger, periodically snapshot the current value — e.g. when the user says 'my Wealthsimple TFSA is at $23,450 now'. The account's balance is anchored on its latest snapshot (+ any transactions after that date), and net worth uses it. Also useful as a reconciliation anchor for cash accounts. Signed integer cents in the account's native currency. Snapshotting the same account+date again overwrites that snapshot.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: ["string", "integer"], description: "Account id or exact account name" },
+        balance_cents: { type: "integer", description: "Signed cents; for a liability, money owed is negative" },
+        date: { type: "string", description: "YYYY-MM-DD the balance refers to; defaults to today" },
+        note: { type: "string", description: "Optional note, e.g. 'after July contribution'" },
+      },
+      required: ["account", "balance_cents"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "list_balance_snapshots",
+    description: "Snapshot history for one account (newest first) — shows how its value moved over time.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: { type: ["string", "integer"], description: "Account id or exact account name" },
+        limit: { type: "integer", description: "Default 24" },
+      },
+      required: ["account"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ---------- tool handlers ----------
@@ -239,6 +282,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
       balance_cents: a.balance_cents,
       balance_cad_cents: a.balance_cad_cents,
       txn_count: a.txn_count,
+      balance_source: a.balance_source,
+      ...(a.balance_as_of ? { balance_as_of: a.balance_as_of } : {}),
     }));
   },
 
@@ -431,13 +476,13 @@ const handlers: Record<string, (args: Args) => unknown> = {
     }
     if (args.uncategorized_only) cond.push("t.category_id IS NULL");
     if (args.search) {
-      cond.push("(t.description_raw LIKE @search OR t.merchant_norm LIKE @search)");
+      cond.push("(t.description_raw LIKE @search OR t.merchant_norm LIKE @search OR t.notes LIKE @search)");
       params.search = `%${args.search}%`;
     }
     const limit = Math.min(Number(args.limit ?? 50), 500);
     const where = cond.length ? `WHERE ${cond.join(" AND ")}` : "";
     const stmt = db.prepare(
-      `SELECT t.id, t.posted_date, t.description_raw, t.amount_cents, t.is_transfer,
+      `SELECT t.id, t.posted_date, t.description_raw, t.amount_cents, t.is_transfer, t.notes,
               a.name AS account, a.currency, c.name AS category
        FROM transactions t
        JOIN accounts a ON a.id = t.account_id
@@ -482,6 +527,15 @@ const handlers: Record<string, (args: Args) => unknown> = {
       }
     });
     return { updated: true, also_updated_same_merchant: bulkUpdated };
+  },
+
+  set_note(args) {
+    const id = Number(args.transaction_id);
+    const exists = db.prepare("SELECT id FROM transactions WHERE id = ?").get(id);
+    if (!exists) throw new Error(`transaction ${id} not found`);
+    const note = args.note == null ? null : String(args.note).trim() || null;
+    db.prepare("UPDATE transactions SET notes = ? WHERE id = ?").run(note, id);
+    return { updated: true, note };
   },
 
   mark_transfer(args) {
@@ -564,6 +618,54 @@ const handlers: Record<string, (args: Args) => unknown> = {
        ON CONFLICT(currency) DO UPDATE SET rate_to_cad = excluded.rate_to_cad, updated_at = unixepoch()`
     ).run(currency, rate);
     return { currency, rate_to_cad: rate };
+  },
+
+  set_balance_snapshot(args) {
+    const account = accountByRef(args.account as string | number);
+    if (!account) throw new Error(`account not found: ${args.account}. Call list_accounts first.`);
+    const balance = Number(args.balance_cents);
+    if (!Number.isInteger(balance)) throw new Error("balance_cents must be an integer (signed cents)");
+    const date = args.date != null ? String(args.date) : new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error("date must be YYYY-MM-DD");
+    if (account.kind === "liability" && balance > 0) {
+      // not an error — but worth flagging, since owed money should be negative
+      console.error(`[snapshot] warning: positive snapshot on liability account ${account.name}`);
+    }
+    db.prepare(
+      `INSERT INTO balance_snapshots (account_id, snapshot_date, balance_cents, note) VALUES (?, ?, ?, ?)
+       ON CONFLICT(account_id, snapshot_date) DO UPDATE SET balance_cents = excluded.balance_cents, note = excluded.note`
+    ).run(account.id, date, balance, args.note != null ? String(args.note) : null);
+    const updated = withBalance(db.prepare("SELECT * FROM accounts WHERE id = ?").get(account.id) as unknown as Account);
+    const prev = db
+      .prepare(
+        "SELECT snapshot_date, balance_cents FROM balance_snapshots WHERE account_id = ? AND snapshot_date < ? ORDER BY snapshot_date DESC LIMIT 1"
+      )
+      .get(account.id, date) as { snapshot_date: string; balance_cents: number } | undefined;
+    return {
+      account: account.name,
+      snapshot_date: date,
+      balance_cents: balance,
+      currency: account.currency,
+      current_balance_cents: updated.balance_cents,
+      ...(prev
+        ? { change_since_previous: { from_date: prev.snapshot_date, delta_cents: balance - prev.balance_cents } }
+        : {}),
+      ...(account.kind === "liability" && balance > 0
+        ? { warning: "this is a liability account — money owed should normally be a NEGATIVE balance" }
+        : {}),
+    };
+  },
+
+  list_balance_snapshots(args) {
+    const account = accountByRef(args.account as string | number);
+    if (!account) throw new Error(`account not found: ${args.account}`);
+    const limit = Math.min(Number(args.limit ?? 24), 200);
+    return db
+      .prepare(
+        `SELECT snapshot_date, balance_cents, note FROM balance_snapshots
+         WHERE account_id = ? ORDER BY snapshot_date DESC LIMIT ${limit}`
+      )
+      .all(account.id);
   },
 };
 

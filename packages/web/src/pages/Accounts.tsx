@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Pencil, Archive } from "lucide-react";
+import { Plus, Pencil, Archive, RefreshCw } from "lucide-react";
 import { api, fmtMoney, type AccountWithBalance } from "../api";
 
 const TYPES = ["chequing", "savings", "credit", "prepaid", "cash", "investment"] as const;
@@ -67,6 +67,21 @@ export default function Accounts() {
     load();
   };
 
+  const updateSnapshot = async (a: AccountWithBalance) => {
+    const input = prompt(
+      `Current value of "${a.name}" in ${a.currency}?\n(e.g. 23450.00 — for money owed use a negative number)`,
+      (a.balance_cents / 100).toFixed(2)
+    );
+    if (input === null) return;
+    const value = parseFloat(input.replace(/[$, ]/g, ""));
+    if (Number.isNaN(value)) return alert("Not a number.");
+    await api.post(`/accounts/${a.id}/snapshots`, {
+      snapshot_date: new Date().toISOString().slice(0, 10),
+      balance_cents: Math.round(value * 100),
+    });
+    load();
+  };
+
   return (
     <>
       <div className="page-head">
@@ -111,14 +126,21 @@ export default function Accounts() {
                 </button>
               </div>
             </div>
-            <div className={`money ${a.balance_cents < 0 ? "neg" : ""}`} style={{ fontSize: 22, fontWeight: 700, marginTop: 10 }}>
+            <div className={`money account-balance ${a.balance_cents < 0 ? "neg" : ""}`}>
               {fmtMoney(a.balance_cents, a.currency)}
             </div>
             <div className="faint">
               {a.currency !== "CAD" ? `≈ ${fmtMoney(a.balance_cad_cents)} CAD · ` : ""}
-              {a.txn_count} transactions
+              {a.balance_source === "snapshot"
+                ? `as of ${a.balance_as_of}`
+                : `${a.txn_count} transactions`}
               {a.kind === "liability" ? " · liability" : ""}
             </div>
+            {a.type === "investment" && (
+              <button style={{ marginTop: 10, width: "100%" }} onClick={() => updateSnapshot(a)}>
+                <RefreshCw size={13} style={{ verticalAlign: -2 }} /> Update value
+              </button>
+            )}
           </div>
         ))}
         {accounts.length === 0 && <div className="empty-state card">No accounts yet. Add your chequing, credit and prepaid cards.</div>}

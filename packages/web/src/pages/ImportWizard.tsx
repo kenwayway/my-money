@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2, Undo2, UploadCloud, CheckCircle2, Wand2 } from "lucide-react";
 import type { ImportSpec } from "@my-money/shared";
 import { api, fmtMoney, type AccountWithBalance, type AnalyzeResult, type Category } from "../api";
+import { catEmoji } from "../categoryIcons";
 
 type Step = "upload" | "mapping" | "preview" | "done";
 type ColRole = "ignore" | "date" | "description" | "amount" | "debit" | "credit" | "balance";
@@ -389,7 +390,7 @@ export default function ImportWizard({ onDone }: { onDone: () => void }) {
                       <td>
                         {!r.duplicate && (
                           <button className="chip" style={cat ? { background: `${cat.color}22`, color: cat.color } : {}} onClick={() => setPickerRow(r.row_index)}>
-                            {cat?.name ?? "— pick —"}
+                            {cat ? `${catEmoji(cat.icon)} ${cat.name}` : "— pick —"}
                           </button>
                         )}
                       </td>
@@ -453,7 +454,7 @@ export default function ImportWizard({ onDone }: { onDone: () => void }) {
                     setPickerRow(null);
                   }}
                 >
-                  {c.name}
+                  {catEmoji(c.icon)} {c.name}
                 </button>
               ))}
               <button
