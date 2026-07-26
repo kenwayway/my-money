@@ -89,7 +89,11 @@ export const transactionsRoute = new Hono()
       if (b.notes !== undefined) db.prepare("UPDATE transactions SET notes = ? WHERE id = ?").run(b.notes, id);
       if (b.is_transfer !== undefined) {
         db.prepare("UPDATE transactions SET is_transfer = ? WHERE id = ?").run(b.is_transfer, id);
-        if (b.is_transfer === 0) db.prepare("UPDATE transactions SET transfer_peer_id = NULL WHERE id = ?").run(id);
+        if (b.is_transfer === 0) {
+          // dissolve the pairing on both sides — the peer must not keep a dangling pointer
+          db.prepare("UPDATE transactions SET transfer_peer_id = NULL WHERE id = ?").run(id);
+          db.prepare("UPDATE transactions SET transfer_peer_id = NULL WHERE transfer_peer_id = ?").run(id);
+        }
       }
     });
 

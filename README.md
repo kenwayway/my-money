@@ -19,7 +19,7 @@ npm start         # 启动 http://localhost:4321 并自动打开浏览器
 项目根目录已有 `.mcp.json`，**用 Claude Code 打开本项目时 MCP server 自动可用**。要在其他项目/全局使用：
 
 ```bash
-claude mcp add --scope user my-money -- npx tsx G:/Things/my-money/packages/server/src/mcp.ts
+claude mcp add --scope user my-money -- npx tsx D:/Things/my-money/packages/server/src/mcp.ts
 ```
 
 然后在对话里直接说，比如：

@@ -14,6 +14,9 @@ export const DB_PATH = process.env.MY_MONEY_DB ?? path.join(dataDir, "money.db")
 export const db = new DatabaseSync(DB_PATH);
 db.exec("PRAGMA journal_mode = WAL;");
 db.exec("PRAGMA foreign_keys = ON;");
+// The web server and the MCP server share this DB; without a busy timeout a
+// concurrent write from the other process throws SQLITE_BUSY immediately.
+db.exec("PRAGMA busy_timeout = 5000;");
 
 /** Run fn inside a transaction (BEGIN/COMMIT, ROLLBACK on throw). */
 export function tx<T>(fn: () => T): T {

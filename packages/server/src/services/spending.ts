@@ -8,6 +8,11 @@ export function currentLocalMonth(): string {
   return format(new Date(), "yyyy-MM");
 }
 
+/** Today (YYYY-MM-DD) in LOCAL time — toISOString() flips to tomorrow's date in the evening (UTC). */
+export function currentLocalDate(): string {
+  return format(new Date(), "yyyy-MM-dd");
+}
+
 export function fxRatesByAccount(): Map<number, number> {
   const accounts = db.prepare("SELECT id, currency FROM accounts").all() as { id: number; currency: string }[];
   return new Map(accounts.map((a) => [a.id, fxRateToCad(a.currency)]));

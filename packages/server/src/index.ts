@@ -42,7 +42,8 @@ if (fs.existsSync(webDist)) {
   app.get("*", serveStatic({ root: relRoot, path: "index.html" }));
 }
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
+// Financial data, no auth — never expose beyond this machine.
+serve({ fetch: app.fetch, port: PORT, hostname: "127.0.0.1" }, (info) => {
   const url = `http://localhost:${info.port}`;
   console.log(`my-money server: ${url}  (db: ${DB_PATH})`);
   if (fs.existsSync(webDist) && process.env.NO_OPEN !== "1") {
