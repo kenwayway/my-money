@@ -237,6 +237,10 @@ input[type="checkbox"] {
   padding: 20px;
 }
 .grid { display: grid; gap: 14px; }
+/* cards size to their content — stretching a card taller than its (fixed-height)
+   chart just leaves dead space, and recharts' ResponsiveContainer only measures
+   its height once at mount, so it never grows into the extra room anyway */
+.grid-top { align-items: start; }
 
 /* ————— month picker ————— */
 
@@ -433,6 +437,30 @@ input[type="checkbox"] {
 .cat-bar-amount {
   text-align: right;
   font-size: 12px;
+}
+
+/* treemap tile labels — HTML in a foreignObject, so they ellipsis instead of
+   spilling out of the tile and getting painted over by the next one */
+.tm-label {
+  font-size: 11.5px;
+  line-height: 1.4;
+  pointer-events: none; /* clicks belong to the tile rect underneath */
+  overflow: hidden;
+  height: 100%;
+}
+.tm-label-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tm-label-amt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chart-head {

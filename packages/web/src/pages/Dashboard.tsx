@@ -167,7 +167,7 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
         </div>
       )}
 
-      <div className="grid" style={{ gridTemplateColumns: "5fr 7fr", marginBottom: 14 }}>
+      <div className="grid grid-top" style={{ gridTemplateColumns: "5fr 7fr", marginBottom: 14 }}>
         <div className="card">
           <div className="chart-head">
             <h2>Spending by category — {month}</h2>
@@ -245,16 +245,24 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
                               if (c) toggleDrill(c);
                             }}
                           >
+                            <title>{`${d.name} — ${fmtMoney(cents)} (${pct}%)`}</title>
                             <rect x={x} y={y} width={width} height={height} rx={4} fill={d.color ?? "#888888"} fillOpacity={dim ? 0.25 : 0.92} stroke="var(--bg)" strokeWidth={2} />
-                            {width > 62 && height > 28 && (
-                              <text x={x + 7} y={y + 17} fill={fg} fontSize={11.5} fontWeight={600} opacity={dim ? 0.5 : 1}>
-                                {d.emoji} {d.name}
-                              </text>
-                            )}
-                            {width > 84 && height > 46 && (
-                              <text x={x + 7} y={y + 33} fill={fg} fontSize={10.5} fontFamily="var(--font-mono)" opacity={dim ? 0.5 : 0.85}>
-                                {fmtMoney(cents)} · {pct}%
-                              </text>
+                            {/* labels live in a foreignObject so CSS ellipsis keeps them inside the tile —
+                                a bare <text> overflows and the next tile's rect paints over it */}
+                            {width > 46 && height > 24 && (
+                              <foreignObject x={x + 6} y={y + 4} width={width - 12} height={height - 8} style={{ pointerEvents: "none" }}>
+                                <div className="tm-label" style={{ color: fg, opacity: dim ? 0.5 : 1 }}>
+                                  <div className="tm-label-name">
+                                    {d.emoji} {d.name}
+                                  </div>
+                                  {/* an ellipsised "$240…" says nothing — drop the line unless it fits */}
+                                  {width > 78 && height > 42 && (
+                                    <div className="tm-label-amt">
+                                      {fmtMoney(cents)} · {pct}%
+                                    </div>
+                                  )}
+                                </div>
+                              </foreignObject>
                             )}
                           </g>
                         );
@@ -307,7 +315,7 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
               </span>
             </div>
           </div>
-          <div style={{ height: 300, marginTop: 14 }}>
+          <div style={{ height: 340, marginTop: 14 }}>
             <ResponsiveContainer>
               <BarChart data={trendData} barGap={2} barCategoryGap="28%" margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
                 <CartesianGrid vertical={false} stroke="var(--border)" />
