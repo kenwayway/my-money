@@ -14,7 +14,8 @@ export function normalizeMerchant(raw: string): string {
 
 export interface RuleMatch {
   category_id: number;
-  source: "rule";
+  /** who created the winning rule — user rules outrank any AI suggestion */
+  rule_source: "user" | "ai";
 }
 
 /** Look up merchant_rules for one normalized merchant. User rules beat AI rules; exact beats prefix beats contains. */
@@ -32,7 +33,7 @@ export function matchRule(merchantNorm: string): RuleMatch | null {
     )
     .all({ m: merchantNorm }) as unknown as MerchantRule[];
   const rule = rules[0];
-  return rule ? { category_id: rule.category_id, source: "rule" } : null;
+  return rule ? { category_id: rule.category_id, rule_source: rule.source } : null;
 }
 
 /** Upsert an exact-match rule. An AI rule never overwrites a user rule. */
@@ -59,6 +60,7 @@ export function upsertRuleSafe(pattern: string, categoryId: number, source: "ai"
 export interface CategorizeOutcome {
   category_id: number | null;
   category_source: "rule" | null;
+  rule_source: "user" | "ai" | null;
 }
 
 /**
@@ -70,7 +72,12 @@ export function categorizeByRules(merchantNorms: string[]): Map<string, Categori
   const results = new Map<string, CategorizeOutcome>();
   for (const m of new Set(merchantNorms)) {
     const rule = matchRule(m);
-    results.set(m, rule ? { category_id: rule.category_id, category_source: "rule" } : { category_id: null, category_source: null });
+    results.set(
+      m,
+      rule
+        ? { category_id: rule.category_id, category_source: "rule", rule_source: rule.rule_source }
+        : { category_id: null, category_source: null, rule_source: null }
+    );
   }
   return results;
 }

@@ -153,7 +153,7 @@ const TOOLS: AnyTool[] = [
   tool({
     name: "import_transactions",
     description:
-      "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; use 'Transfer' for e-transfers between the user's own accounts and credit-card payments). Categories you provide are remembered as merchant rules for future imports. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is then reconciled against it and sign mistakes are caught immediately. Returns an import_id that can undo the whole batch.",
+      "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; use 'Transfer' for e-transfers between the user's own accounts and credit-card payments). Categories you provide are remembered as merchant rules for future imports; where the user has previously corrected a merchant's category, that user rule takes precedence over your suggestion. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is then reconciled against it and sign mistakes are caught immediately. Returns an import_id that can undo the whole batch.",
     input: z.strictObject({
       account: AccountRef,
       source_label: z.string().optional().describe("e.g. the statement file name, for the import history"),
@@ -198,7 +198,7 @@ const TOOLS: AnyTool[] = [
       const deduped = dedupeRows(account.id, rows);
       const toInsert = deduped.filter((r) => !r.duplicate);
 
-      // categories: explicit from AI > learned rules
+      // categories: user rule > explicit from AI > learned AI rule
       const ruleResults = categorizeByRules(toInsert.map((r) => r.merchant_norm));
       const payloadSha = crypto.createHash("sha256").update(JSON.stringify(txns)).digest("hex");
 
@@ -227,24 +227,28 @@ const TOOLS: AnyTool[] = [
         for (const r of deduped) {
           if (r.duplicate) continue;
           const provided = txns[r.row_index]?.category;
+          const rule = ruleResults.get(r.merchant_norm);
           let categoryId: number | null = null;
           let source: string | null = null;
+          // precedence: user-made rule > AI-provided category > AI-made rule.
+          // A user's correction is law — the AI's per-import suggestion never overrides it.
+          if (rule?.category_id != null && rule.rule_source === "user") {
+            categoryId = rule.category_id;
+            source = "rule";
+          }
           if (provided) {
             const cat = cats.get(provided.toLowerCase());
-            if (cat) {
+            if (!cat) {
+              unknownCategories.add(provided);
+            } else if (categoryId === null) {
               categoryId = cat.id;
               source = "ai";
               upsertRuleSafe(r.merchant_norm, cat.id, "ai"); // remember for future imports
-            } else {
-              unknownCategories.add(provided);
             }
           }
-          if (categoryId === null) {
-            const rule = ruleResults.get(r.merchant_norm);
-            if (rule?.category_id != null) {
-              categoryId = rule.category_id;
-              source = "rule";
-            }
+          if (categoryId === null && rule?.category_id != null) {
+            categoryId = rule.category_id;
+            source = "rule";
           }
           const isTransfer = categoryId !== null && cats.get("transfer")?.id === categoryId ? 1 : 0;
           const info = insert.run(
