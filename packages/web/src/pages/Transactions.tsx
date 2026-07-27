@@ -7,9 +7,24 @@ import MonthPicker from "../components/MonthPicker";
 interface Filters {
   account_id: string;
   month: string;
+  /** category id as string, "" for all, or "uncat" for uncategorized-only */
   category_id: string;
   q: string;
-  uncategorized: boolean;
+}
+
+function initialFilters(): Filters {
+  const base: Filters = { account_id: "", month: "", category_id: "", q: "" };
+  const raw = sessionStorage.getItem("txn-prefill");
+  if (raw) {
+    sessionStorage.removeItem("txn-prefill");
+    try {
+      const p = JSON.parse(raw) as Partial<Filters>;
+      return { ...base, category_id: p.category_id ?? "", month: p.month ?? "" };
+    } catch {
+      /* ignore bad prefill */
+    }
+  }
+  return base;
 }
 
 export default function Transactions() {
@@ -18,7 +33,7 @@ export default function Transactions() {
   const [offset, setOffset] = useState(0);
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [filters, setFilters] = useState<Filters>({ account_id: "", month: "", category_id: "", q: "", uncategorized: false });
+  const [filters, setFilters] = useState<Filters>(initialFilters);
   const [picker, setPicker] = useState<TxnRow | null>(null);
   const [noteEdit, setNoteEdit] = useState<TxnRow | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
@@ -38,9 +53,9 @@ export default function Transactions() {
       p.set("from", `${filters.month}-01`);
       p.set("to", `${filters.month}-31`);
     }
-    if (filters.category_id) p.set("category_id", filters.category_id);
+    if (filters.category_id === "uncat") p.set("uncategorized", "1");
+    else if (filters.category_id) p.set("category_id", filters.category_id);
     if (filters.q) p.set("q", filters.q);
-    if (filters.uncategorized) p.set("uncategorized", "1");
     p.set("limit", String(limit));
     p.set("offset", String(offset));
     api
@@ -125,20 +140,15 @@ export default function Transactions() {
         <MonthPicker value={filters.month} onChange={(m) => { setOffset(0); setFilters({ ...filters, month: m }); }} allowEmpty />
         <select value={filters.category_id} onChange={(e) => { setOffset(0); setFilters({ ...filters, category_id: e.target.value }); }}>
           <option value="">All categories</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
+          <option value="uncat">Uncategorized</option>
+          {categories
+            .filter((c) => c.name !== "Uncategorized")
+            .map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
         </select>
-        <label style={{ display: "flex", alignItems: "center", gap: 5 }}>
-          <input
-            type="checkbox"
-            checked={filters.uncategorized}
-            onChange={(e) => { setOffset(0); setFilters({ ...filters, uncategorized: e.target.checked }); }}
-          />
-          Uncategorized only
-        </label>
         <div style={{ position: "relative", marginLeft: "auto" }}>
           <Search size={14} style={{ position: "absolute", left: 9, top: 9, color: "var(--text-faint)" }} />
           <input

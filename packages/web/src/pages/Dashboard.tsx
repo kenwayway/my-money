@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
-import { AlertCircle } from "lucide-react";
-import { api, fmtMoney, type NetWorthSummary, type SpendingSummary } from "../api";
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Treemap } from "recharts";
+import { AlertCircle, X } from "lucide-react";
+import { api, fmtMoney, type NetWorthSummary, type SpendingSummary, type TxnRow } from "../api";
 import { catEmoji } from "../categoryIcons";
 import MonthPicker from "../components/MonthPicker";
 
@@ -28,6 +28,15 @@ function ChartTip({ active, payload, label }: { active?: boolean; payload?: TipE
       ))}
     </div>
   );
+}
+
+/** black or white text depending on the fill's luminance */
+function textColorOn(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b > 160 ? "#1f2937" : "#ffffff";
 }
 
 const RAD = Math.PI / 180;
@@ -61,10 +70,22 @@ function donutLabel({ cx = 0, cy = 0, midAngle = 0, outerRadius = 0, percent = 0
   );
 }
 
+type CatSpend = SpendingSummary["by_category"][number];
+
 export default function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }) {
   const [netWorth, setNetWorth] = useState<NetWorthSummary | null>(null);
   const [spending, setSpending] = useState<SpendingSummary | null>(null);
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [drill, setDrill] = useState<CatSpend | null>(null);
+  const [drillRows, setDrillRows] = useState<TxnRow[] | null>(null);
+  const [chartMode, setChartMode] = useState<"donut" | "treemap">(() =>
+    localStorage.getItem("spend-chart") === "treemap" ? "treemap" : "donut"
+  );
+
+  const setMode = (m: "donut" | "treemap") => {
+    setChartMode(m);
+    localStorage.setItem("spend-chart", m);
+  };
 
   useEffect(() => {
     api.get<NetWorthSummary>("/summary/net-worth").then(setNetWorth).catch(console.error);
@@ -73,6 +94,40 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     api.get<SpendingSummary>(`/summary/spending?month=${month}`).then(setSpending).catch(console.error);
   }, [month]);
 
+  // load the flat transaction list for the clicked slice
+  useEffect(() => {
+    if (!drill) {
+      setDrillRows(null);
+      return;
+    }
+    const p = new URLSearchParams();
+    if (drill.category_id === null) p.set("uncategorized", "1");
+    else p.set("category_id", String(drill.category_id));
+    p.set("from", `${month}-01`);
+    p.set("to", `${month}-31`);
+    p.set("limit", "500");
+    api
+      .get<{ rows: TxnRow[] }>(`/transactions?${p}`)
+      .then((r) => setDrillRows(r.rows.filter((t) => !t.is_transfer))) // match the donut's scope
+      .catch(console.error);
+  }, [drill, month]);
+
+  const changeMonth = (m: string) => {
+    setMonth(m);
+    setDrill(null);
+  };
+
+  const toggleDrill = (c: CatSpend) => setDrill(drill?.category_id === c.category_id ? null : c);
+
+  const openInTransactions = () => {
+    if (!drill) return;
+    sessionStorage.setItem(
+      "txn-prefill",
+      JSON.stringify({ category_id: drill.category_id === null ? "uncat" : String(drill.category_id), month })
+    );
+    onNavigate("transactions");
+  };
+
   if (!netWorth) return <div className="empty-state">Loading…</div>;
 
   const donutData = (spending?.by_category ?? []).map((c) => ({
@@ -80,6 +135,7 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     value: c.total_cad_cents / 100,
     color: c.category_color,
     emoji: catEmoji(c.category_icon),
+    category_id: c.category_id,
   }));
   const monthTotal = (spending?.by_category ?? []).reduce((s, c) => s + c.total_cad_cents, 0);
   const trendData = (spending?.trend ?? []).map((t) => ({
@@ -92,14 +148,20 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     <>
       <div className="page-head">
         <h1>Dashboard</h1>
-        <MonthPicker value={month} onChange={setMonth} />
+        <MonthPicker value={month} onChange={changeMonth} />
       </div>
 
       {spending && spending.uncategorized_count > 0 && (
         <div className="alert warn" style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <AlertCircle size={15} />
           {spending.uncategorized_count} uncategorized transaction{spending.uncategorized_count > 1 ? "s" : ""} —{" "}
-          <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => onNavigate("transactions")}>
+          <a
+            style={{ cursor: "pointer", textDecoration: "underline" }}
+            onClick={() => {
+              sessionStorage.setItem("txn-prefill", JSON.stringify({ category_id: "uncat" }));
+              onNavigate("transactions");
+            }}
+          >
             review
           </a>
         </div>
@@ -107,42 +169,113 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
 
       <div className="grid" style={{ gridTemplateColumns: "5fr 7fr", marginBottom: 14 }}>
         <div className="card">
-          <h2>Spending by category — {month}</h2>
+          <div className="chart-head">
+            <h2>Spending by category — {month}</h2>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button className={chartMode === "donut" ? "primary" : ""} style={{ padding: "3px 9px", fontSize: 12 }} onClick={() => setMode("donut")}>
+                Donut
+              </button>
+              <button className={chartMode === "treemap" ? "primary" : ""} style={{ padding: "3px 9px", fontSize: 12 }} onClick={() => setMode("treemap")}>
+                Treemap
+              </button>
+            </div>
+          </div>
           {donutData.length === 0 ? (
             <div className="empty-state">No spending this month</div>
           ) : (
             <>
-              <div style={{ height: 230, position: "relative" }}>
-                <ResponsiveContainer>
-                  <PieChart>
-                    <Pie
+              <div style={{ height: 230, position: "relative", marginTop: 8 }}>
+                {chartMode === "donut" ? (
+                  <>
+                    <ResponsiveContainer>
+                      <PieChart>
+                        <Pie
+                          data={donutData}
+                          dataKey="value"
+                          nameKey="name"
+                          innerRadius={54}
+                          outerRadius={78}
+                          paddingAngle={2}
+                          label={donutLabel}
+                          labelLine={false}
+                          isAnimationActive={false}
+                          style={{ cursor: "pointer", outline: "none" }}
+                          onClick={(_, index) => {
+                            const c = spending?.by_category[index];
+                            if (c) toggleDrill(c);
+                          }}
+                        >
+                          {donutData.map((d, i) => (
+                            <Cell
+                              key={i}
+                              fill={d.color}
+                              stroke="none"
+                              fillOpacity={drill && drill.category_id !== d.category_id ? 0.3 : 1}
+                            />
+                          ))}
+                        </Pie>
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="donut-center">
+                      <div className="faint">Total</div>
+                      <div className="money">{fmtMoney(monthTotal)}</div>
+                    </div>
+                  </>
+                ) : (
+                  <ResponsiveContainer>
+                    <Treemap
                       data={donutData}
                       dataKey="value"
                       nameKey="name"
-                      innerRadius={54}
-                      outerRadius={78}
-                      paddingAngle={2}
-                      label={donutLabel}
-                      labelLine={false}
+                      aspectRatio={4 / 3}
                       isAnimationActive={false}
-                    >
-                      {donutData.map((d, i) => (
-                        <Cell key={i} fill={d.color} stroke="none" />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="donut-center">
-                  <div className="faint">Total</div>
-                  <div className="money">{fmtMoney(monthTotal)}</div>
-                </div>
+                      content={((p: { x?: number; y?: number; width?: number; height?: number; name?: string }) => {
+                        const d = donutData.find((c) => c.name === p.name);
+                        const { x = 0, y = 0, width = 0, height = 0 } = p;
+                        if (!d || width <= 0 || height <= 0) return <g />;
+                        const dim = drill && drill.category_id !== d.category_id;
+                        const fg = textColorOn(d.color ?? "#888888");
+                        const cents = Math.round(d.value * 100);
+                        const pct = monthTotal > 0 ? Math.round((cents / monthTotal) * 100) : 0;
+                        return (
+                          <g
+                            style={{ cursor: "pointer" }}
+                            onClick={() => {
+                              const c = spending?.by_category.find((x2) => x2.category_name === d.name);
+                              if (c) toggleDrill(c);
+                            }}
+                          >
+                            <rect x={x} y={y} width={width} height={height} rx={4} fill={d.color ?? "#888888"} fillOpacity={dim ? 0.25 : 0.92} stroke="var(--bg)" strokeWidth={2} />
+                            {width > 62 && height > 28 && (
+                              <text x={x + 7} y={y + 17} fill={fg} fontSize={11.5} fontWeight={600} opacity={dim ? 0.5 : 1}>
+                                {d.emoji} {d.name}
+                              </text>
+                            )}
+                            {width > 84 && height > 46 && (
+                              <text x={x + 7} y={y + 33} fill={fg} fontSize={10.5} fontFamily="var(--font-mono)" opacity={dim ? 0.5 : 0.85}>
+                                {fmtMoney(cents)} · {pct}%
+                              </text>
+                            )}
+                          </g>
+                        );
+                        // recharts' content prop typing wants an element; a render fn works at runtime
+                      }) as unknown as React.ReactElement}
+                    />
+                  </ResponsiveContainer>
+                )}
               </div>
               <div className="cat-bars">
                 {(() => {
                   const cats = (spending?.by_category ?? []).slice(0, 8);
                   const max = Math.max(1, ...cats.map((c) => c.total_cad_cents));
                   return cats.map((c) => (
-                    <div key={String(c.category_id)} className="cat-bar-row">
+                    <div
+                      key={String(c.category_id)}
+                      className="cat-bar-row"
+                      style={{ cursor: "pointer", opacity: drill && drill.category_id !== c.category_id ? 0.45 : 1 }}
+                      onClick={() => toggleDrill(c)}
+                      title={`Show ${c.category_name} transactions`}
+                    >
                       <span className="cat-bar-name" title={c.category_name}>
                         <span className="cat-emoji" style={{ background: `${c.category_color}1f` }}>{catEmoji(c.category_icon)}</span>
                         {c.category_name}
@@ -194,6 +327,59 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
           </div>
         </div>
       </div>
+
+      {drill && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span className="cat-emoji" style={{ background: `${drill.category_color}1f` }}>{catEmoji(drill.category_icon)}</span>
+            <h2 style={{ margin: 0 }}>
+              {drill.category_name} — {month}
+            </h2>
+            <span className="money">{fmtMoney(drill.total_cad_cents)}</span>
+            <span className="faint">{drillRows ? `${drillRows.length} transaction${drillRows.length === 1 ? "" : "s"}` : "loading…"}</span>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+              <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={openInTransactions}>
+                Open in Transactions
+              </a>
+              <button title="Close" style={{ padding: "3px 7px" }} onClick={() => setDrill(null)}>
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+          <table className="table" style={{ marginTop: 10 }}>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Account</th>
+                <th style={{ textAlign: "right" }}>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(drillRows ?? []).map((t) => (
+                <tr key={t.id}>
+                  <td className="dim" style={{ whiteSpace: "nowrap" }}>{t.posted_date}</td>
+                  <td style={{ maxWidth: 460 }}>
+                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.description_raw}>
+                      {t.description_raw}
+                    </div>
+                    {t.notes && (
+                      <div className="faint" style={{ fontSize: 12, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.notes}>
+                        {t.notes}
+                      </div>
+                    )}
+                  </td>
+                  <td className="dim">{t.account_name}</td>
+                  <td className={`money ${t.amount_cents < 0 ? "" : "pos"}`} style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    {fmtMoney(t.amount_cents, t.account_currency, true)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {drillRows && drillRows.length === 0 && <div className="empty-state">No transactions in this category this month.</div>}
+        </div>
+      )}
 
       <div className="card">
         <h2>Accounts</h2>

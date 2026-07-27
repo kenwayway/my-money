@@ -24,6 +24,8 @@ const ICON_EMOJI: Record<string, string> = {
   "plus-circle": "💰",
   "arrow-left-right": "🔄",
   "help-circle": "❓",
+  "paw-print": "🐾",
+  shirt: "👕",
   tag: "🏷️",
 };
 
