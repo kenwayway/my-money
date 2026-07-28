@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { db } from "../db/connection.js";
 import { netWorth } from "../services/balances.js";
 import { suggestTransferPairs } from "../services/transfers.js";
+import { financialInbox } from "../services/inbox.js";
 import {
   currentLocalMonth,
   fxRatesByAccount,
@@ -12,6 +13,7 @@ import type { MonthSpend } from "@my-money/shared";
 
 export const summaryRoute = new Hono()
   .get("/net-worth", (c) => c.json(netWorth()))
+  .get("/inbox", (c) => c.json(financialInbox()))
   .get("/spending", (c) => {
     const month = c.req.query("month") ?? currentLocalMonth();
 

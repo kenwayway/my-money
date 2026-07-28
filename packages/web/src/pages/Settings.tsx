@@ -1,17 +1,7 @@
 import { useEffect, useState } from "react";
-import { Trash2, Undo2, Plus, Download } from "lucide-react";
+import { Trash2, Plus, Download } from "lucide-react";
 import { api, fmtMoney, type Category } from "../api";
 import { catEmoji } from "../categoryIcons";
-
-interface ImportRow {
-  id: number;
-  account_name: string;
-  file_name: string;
-  inserted_count: number;
-  skipped_dupes: number;
-  status: "committed" | "undone";
-  created_at: number;
-}
 
 interface RuleRow {
   id: number;
@@ -29,7 +19,6 @@ interface FxRow {
 
 export default function Settings() {
   const [settings, setSettings] = useState<Record<string, string | boolean>>({});
-  const [imports, setImports] = useState<ImportRow[]>([]);
   const [rules, setRules] = useState<RuleRow[]>([]);
   const [fx, setFx] = useState<FxRow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -38,7 +27,6 @@ export default function Settings() {
 
   const load = () => {
     api.get<Record<string, string | boolean>>("/settings").then(setSettings).catch(console.error);
-    api.get<ImportRow[]>("/imports").then(setImports).catch(console.error);
     api.get<RuleRow[]>("/merchant-rules").then(setRules).catch(console.error);
     api.get<FxRow[]>("/fx-rates").then(setFx).catch(console.error);
     api.get<Category[]>("/categories").then(setCategories).catch(console.error);
@@ -139,42 +127,6 @@ export default function Settings() {
         </div>
 
         <div className="card">
-          <h2>Import history</h2>
-          {imports.length === 0 && <div className="empty-state">No imports yet.</div>}
-          <table className="table">
-            <tbody>
-              {imports.map((i) => (
-                <tr key={i.id} style={i.status === "undone" ? { opacity: 0.5 } : undefined}>
-                  <td>
-                    <div>{i.file_name}</div>
-                    <div className="faint">
-                      {i.account_name} · {new Date(i.created_at * 1000).toLocaleDateString()} · {i.inserted_count} imported, {i.skipped_dupes} dupes
-                    </div>
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {i.status === "committed" ? (
-                      <button
-                        style={{ padding: "4px 9px" }}
-                        onClick={async () => {
-                          if (confirm(`Undo import of ${i.file_name}? Its ${i.inserted_count} transactions will be deleted.`)) {
-                            await api.post(`/imports/${i.id}/undo`);
-                            load();
-                          }
-                        }}
-                      >
-                        <Undo2 size={13} style={{ verticalAlign: -2 }} /> Undo
-                      </button>
-                    ) : (
-                      <span className="badge">undone</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card">
           <h2>Categories</h2>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
             {categories.map((c) => (
@@ -248,7 +200,7 @@ export default function Settings() {
                 ))}
               </tbody>
             </table>
-            {rules.length === 0 && <div className="empty-state">Rules appear here after your first categorized import.</div>}
+            {rules.length === 0 && <div className="empty-state">Rules appear here after your first categorized statement.</div>}
           </div>
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { db, tx } from "../db/connection.js";
+import type { TransferPairSuggestion } from "@my-money/shared";
 
 interface PairSide {
   id: number;
@@ -80,11 +81,6 @@ export function unmarkTransferInTransaction(id: number): void {
   unmarkTransferUpdates(id);
 }
 
-export interface TransferSuggestion {
-  a: { id: number; account_id: number; account_name: string; posted_date: string; description_raw: string; amount_cents: number };
-  b: { id: number; account_id: number; account_name: string; posted_date: string; description_raw: string; amount_cents: number };
-}
-
 const KEYWORDS = ["TRANSFER", "TFR", "E-TRANSFER", "ETRANSFER", "PAYMENT", "PYMT", "PAY BILL", "BILL PAY"];
 
 /**
@@ -92,7 +88,7 @@ const KEYWORDS = ["TRANSFER", "TFR", "E-TRANSFER", "ETRANSFER", "PAYMENT", "PYMT
  * same currency, not already paired, with transfer-ish keywords on at least
  * one side. Suggestions only — the user confirms in the UI.
  */
-export function suggestTransferPairs(): TransferSuggestion[] {
+export function suggestTransferPairs(): TransferPairSuggestion[] {
   const rows = db
     .prepare(
       `SELECT t.id, t.account_id, a.name AS account_name, a.currency, t.posted_date, t.description_raw, t.merchant_norm, t.amount_cents
@@ -112,7 +108,7 @@ export function suggestTransferPairs(): TransferSuggestion[] {
     amount_cents: number;
   }[];
 
-  const suggestions: TransferSuggestion[] = [];
+  const suggestions: TransferPairSuggestion[] = [];
   const used = new Set<number>();
 
   for (let i = 0; i < rows.length; i++) {
@@ -131,8 +127,8 @@ export function suggestTransferPairs(): TransferSuggestion[] {
       if (dayDiff > 3) continue;
       if (!keywordy(a.merchant_norm) && !keywordy(b.merchant_norm)) continue;
       suggestions.push({
-        a: { id: a.id, account_id: a.account_id, account_name: a.account_name, posted_date: a.posted_date, description_raw: a.description_raw, amount_cents: a.amount_cents },
-        b: { id: b.id, account_id: b.account_id, account_name: b.account_name, posted_date: b.posted_date, description_raw: b.description_raw, amount_cents: b.amount_cents },
+        a: { id: a.id, account_id: a.account_id, account_name: a.account_name, currency: a.currency, posted_date: a.posted_date, description_raw: a.description_raw, amount_cents: a.amount_cents },
+        b: { id: b.id, account_id: b.account_id, account_name: b.account_name, currency: b.currency, posted_date: b.posted_date, description_raw: b.description_raw, amount_cents: b.amount_cents },
       });
       used.add(a.id);
       used.add(b.id);

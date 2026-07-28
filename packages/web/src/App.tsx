@@ -1,24 +1,31 @@
 import { useEffect, useState } from "react";
-import { LayoutDashboard, CreditCard, List, Upload, Settings as SettingsIcon, Wallet, Moon, Sun } from "lucide-react";
+import { LayoutDashboard, CreditCard, FileCheck2, List, Settings as SettingsIcon, Wallet, Moon, Sun } from "lucide-react";
 import Dashboard from "./pages/Dashboard";
 import Accounts from "./pages/Accounts";
 import Transactions from "./pages/Transactions";
-import ImportWizard from "./pages/ImportWizard";
+import Statements from "./pages/Statements";
 import Settings from "./pages/Settings";
 import { api } from "./api";
 
-type Page = "dashboard" | "accounts" | "transactions" | "import" | "settings";
+type Page = "dashboard" | "accounts" | "transactions" | "statements" | "settings";
+const PAGES = new Set<Page>(["dashboard", "accounts", "transactions", "statements", "settings"]);
+
+function pageFromHash(): Page {
+  const hash = location.hash.slice(1);
+  if (hash === "import") return "statements";
+  return PAGES.has(hash as Page) ? (hash as Page) : "dashboard";
+}
 
 const NAV: { key: Page; label: string; icon: React.ReactNode }[] = [
   { key: "dashboard", label: "Dashboard", icon: <LayoutDashboard size={17} /> },
   { key: "accounts", label: "Accounts", icon: <CreditCard size={17} /> },
   { key: "transactions", label: "Transactions", icon: <List size={17} /> },
-  { key: "import", label: "Import", icon: <Upload size={17} /> },
+  { key: "statements", label: "Statements", icon: <FileCheck2 size={17} /> },
   { key: "settings", label: "Settings", icon: <SettingsIcon size={17} /> },
 ];
 
 export default function App() {
-  const [page, setPage] = useState<Page>((location.hash.slice(1) as Page) || "dashboard");
+  const [page, setPage] = useState<Page>(pageFromHash);
   const [theme, setTheme] = useState<string>(localStorage.getItem("theme") ?? "light");
 
   useEffect(() => {
@@ -27,7 +34,7 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    const onHash = () => setPage((location.hash.slice(1) as Page) || "dashboard");
+    const onHash = () => setPage(pageFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -71,7 +78,7 @@ export default function App() {
         {page === "dashboard" && <Dashboard onNavigate={(p) => nav(p as Page)} />}
         {page === "accounts" && <Accounts />}
         {page === "transactions" && <Transactions />}
-        {page === "import" && <ImportWizard onDone={() => nav("transactions")} />}
+        {page === "statements" && <Statements />}
         {page === "settings" && <Settings />}
       </main>
     </div>

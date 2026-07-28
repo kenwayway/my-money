@@ -33,7 +33,7 @@
   --shadow-pop: 0 6px 16px rgba(45, 38, 20, 0.1), 0 24px 60px rgba(45, 38, 20, 0.18);
   --ring: rgba(29, 106, 80, 0.25);
 
-  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-display: "Instrument Sans", "Segoe UI", "Helvetica Neue", sans-serif;
   --font-body: "Instrument Sans", "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: "Spline Sans Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
 }

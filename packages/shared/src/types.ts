@@ -86,7 +86,39 @@ export interface ImportRecord {
   inserted_count: number;
   skipped_dupes: number;
   status: "committed" | "undone";
+  source: "web" | "mcp";
+  statement_start_date: string | null;
+  statement_end_date: string | null;
+  statement_balance_cents: number | null;
+  computed_balance_cents: number | null;
+  reconciliation_status: "not_checked" | "matched" | "mismatch";
+  validation_status: "not_checked" | "passed" | "failed";
   created_at: number;
+}
+
+export interface StatementRecord extends ImportRecord {
+  account_name: string;
+  account_currency: string;
+  account_color: string;
+  account_type: AccountType;
+  institution: string | null;
+  active_transaction_count: number;
+  difference_cents: number | null;
+}
+
+export interface StatementTransaction {
+  id: number;
+  posted_date: string;
+  description_raw: string;
+  amount_cents: number;
+  category_name: string | null;
+  is_transfer: 0 | 1;
+  notes: string | null;
+}
+
+export interface StatementDetail {
+  statement: StatementRecord;
+  transactions: StatementTransaction[];
 }
 
 export interface MerchantRule {
@@ -138,32 +170,43 @@ export interface SpendingSummary {
   missing_fx_currencies: string[];
 }
 
-/** A parsed transaction row from a CSV, before it becomes a DB transaction. */
-export interface ParsedTxn {
-  row_index: number;
+export interface TransferPairSide {
+  id: number;
+  account_id: number;
+  account_name: string;
+  currency: string;
   posted_date: string;
   description_raw: string;
-  merchant_norm: string;
   amount_cents: number;
-  fingerprint: string;
-  duplicate: boolean;
-  category_id: number | null;
-  category_source: CategorySource | null;
-  category_name?: string | null;
 }
 
-export interface AnalyzeResult {
-  staging_token: string;
-  file_name: string;
-  file_sha256: string;
-  file_already_imported: boolean;
-  spec: unknown; // ImportSpec — typed via importSpec.ts
-  spec_source: "cache" | "ai" | "manual";
-  bank_guess: string | null;
-  columns_preview: string[][]; // first raw rows for the mapping editor
-  rows: ParsedTxn[];
-  new_count: number;
-  duplicate_count: number;
-  parse_errors: { row_index: number; error: string }[];
-  validation: { ok: boolean; parse_rate: number; balance_check: "ok" | "failed" | "n/a"; message?: string };
+export interface TransferPairSuggestion {
+  a: TransferPairSide;
+  b: TransferPairSide;
+}
+
+export interface StaleInvestmentAccount {
+  account_id: number;
+  account_name: string;
+  currency: string;
+  last_snapshot_date: string | null;
+  days_since_snapshot: number | null;
+}
+
+export interface StaleFxRate {
+  currency: string;
+  updated_at: number;
+  days_since_update: number;
+}
+
+export interface FinancialInboxSummary {
+  attention_group_count: number;
+  uncategorized_count: number;
+  unreconciled_statement_count: number;
+  mismatched_statement_count: number;
+  transfer_suggestion_count: number;
+  transfer_suggestions: TransferPairSuggestion[];
+  missing_fx_currencies: string[];
+  stale_fx_rates: StaleFxRate[];
+  stale_investment_accounts: StaleInvestmentAccount[];
 }

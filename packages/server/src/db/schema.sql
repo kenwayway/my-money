@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   last4 TEXT,
   opening_balance_cents INTEGER NOT NULL DEFAULT 0,
   opening_balance_date TEXT,
-  color TEXT NOT NULL DEFAULT '#6366f1',
+  color TEXT NOT NULL DEFAULT '#4d6f9c',
   icon TEXT NOT NULL DEFAULT 'credit-card',
   archived INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS imports (
   inserted_count INTEGER NOT NULL,
   skipped_dupes INTEGER NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('committed','undone')),
+  source TEXT NOT NULL DEFAULT 'web' CHECK(source IN ('web','mcp')),
+  statement_start_date TEXT,
+  statement_end_date TEXT,
+  statement_balance_cents INTEGER,
+  computed_balance_cents INTEGER,
+  reconciliation_status TEXT NOT NULL DEFAULT 'not_checked'
+    CHECK(reconciliation_status IN ('not_checked','matched','mismatch')),
+  validation_status TEXT NOT NULL DEFAULT 'not_checked'
+    CHECK(validation_status IN ('not_checked','passed','failed')),
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 

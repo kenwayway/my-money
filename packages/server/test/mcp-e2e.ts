@@ -40,6 +40,7 @@ const call = async (name: string, args: Record<string, unknown>) => {
 
 // account + first import: AI says PETSMART is Shopping → accepted, ai rule created
 const acct = await call("create_account", { name: "Visa", type: "credit" });
+assert.equal(acct.color, "#8a5e80", "MCP-created accounts should receive their type color");
 const imp1 = await call("import_transactions", {
   account: acct.id,
   transactions: [{ date: "2026-07-01", description: "PETSMART #1234 HALIFAX NS", amount_cents: -5000, category: "Shopping" }],
@@ -77,6 +78,10 @@ const imp4 = await call("import_transactions", {
   statement_end_balance_cents: -10100,
 });
 assert.equal(imp4.balance_check.status, "ok");
+const importHistory = await call("list_imports", {});
+const reconciledImport = importHistory.find((i: { id: number }) => i.id === imp4.import_id);
+assert.equal(reconciledImport.reconciliation_status, "matched");
+assert.equal(reconciledImport.statement_end_date, "2026-07-20");
 
 // A mismatch is rejected atomically by default: no transaction, import record,
 // or learned merchant rule survives the rollback.

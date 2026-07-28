@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Treemap } from "recharts";
-import { AlertCircle, X } from "lucide-react";
-import { api, fmtMoney, type NetWorthSummary, type SpendingSummary, type TxnRow } from "../api";
+import { X } from "lucide-react";
+import {
+  api,
+  fmtMoney,
+  type FinancialInboxSummary,
+  type NetWorthSummary,
+  type SpendingSummary,
+  type TxnRow,
+} from "../api";
 import { catEmoji } from "../categoryIcons";
 import MonthPicker from "../components/MonthPicker";
+import FinancialInbox from "../components/FinancialInbox";
 
 interface TipEntry {
   dataKey?: string | number;
@@ -71,10 +79,14 @@ function donutLabel({ cx = 0, cy = 0, midAngle = 0, outerRadius = 0, percent = 0
 }
 
 type CatSpend = SpendingSummary["by_category"][number];
+type TransferSuggestion = FinancialInboxSummary["transfer_suggestions"][number];
 
 export default function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }) {
   const [netWorth, setNetWorth] = useState<NetWorthSummary | null>(null);
   const [spending, setSpending] = useState<SpendingSummary | null>(null);
+  const [inbox, setInbox] = useState<FinancialInboxSummary | null>(null);
+  const [inboxError, setInboxError] = useState("");
+  const [pairingId, setPairingId] = useState<number | null>(null);
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [drill, setDrill] = useState<CatSpend | null>(null);
   const [drillRows, setDrillRows] = useState<TxnRow[] | null>(null);
@@ -89,6 +101,9 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
 
   useEffect(() => {
     api.get<NetWorthSummary>("/summary/net-worth").then(setNetWorth).catch(console.error);
+    api.get<FinancialInboxSummary>("/summary/inbox").then(setInbox).catch((e) => {
+      setInboxError(`Could not load financial inbox: ${e instanceof Error ? e.message : e}`);
+    });
   }, []);
   useEffect(() => {
     api.get<SpendingSummary>(`/summary/spending?month=${month}`).then(setSpending).catch(console.error);
@@ -128,6 +143,40 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     onNavigate("transactions");
   };
 
+  const reviewUncategorized = () => {
+    sessionStorage.setItem("txn-prefill", JSON.stringify({ category_id: "uncat" }));
+    onNavigate("transactions");
+  };
+
+  const pairSuggestedTransfer = async (suggestion: TransferSuggestion) => {
+    if (
+      !confirm(
+        `Link ${suggestion.a.account_name} ${fmtMoney(suggestion.a.amount_cents, suggestion.a.currency, true)} ` +
+          `and ${suggestion.b.account_name} ${fmtMoney(suggestion.b.amount_cents, suggestion.b.currency, true)} as one transfer?`
+      )
+    ) {
+      return;
+    }
+    setPairingId(suggestion.a.id);
+    setInboxError("");
+    try {
+      await api.post("/transactions/pair-transfer", {
+        id_a: suggestion.a.id,
+        id_b: suggestion.b.id,
+      });
+      const [nextInbox, nextSpending] = await Promise.all([
+        api.get<FinancialInboxSummary>("/summary/inbox"),
+        api.get<SpendingSummary>(`/summary/spending?month=${month}`),
+      ]);
+      setInbox(nextInbox);
+      setSpending(nextSpending);
+    } catch (e) {
+      setInboxError(`Could not link transfer: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setPairingId(null);
+    }
+  };
+
   if (!netWorth) return <div className="empty-state">Loading…</div>;
 
   const donutData = (spending?.by_category ?? []).map((c) => ({
@@ -151,35 +200,14 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
         <MonthPicker value={month} onChange={changeMonth} />
       </div>
 
-      {(!netWorth.fx_complete || (spending && !spending.fx_complete)) && (
-        <div className="alert error" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <AlertCircle size={15} />
-          CAD totals are unavailable until FX rates are set for{" "}
-          {[...new Set([
-            ...netWorth.missing_fx_currencies,
-            ...(spending?.missing_fx_currencies ?? []),
-          ])].join(", ")}.{" "}
-          <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => onNavigate("settings")}>
-            set rates
-          </a>
-        </div>
-      )}
-
-      {spending && spending.uncategorized_count > 0 && (
-        <div className="alert warn" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <AlertCircle size={15} />
-          {spending.uncategorized_count} uncategorized transaction{spending.uncategorized_count > 1 ? "s" : ""} —{" "}
-          <a
-            style={{ cursor: "pointer", textDecoration: "underline" }}
-            onClick={() => {
-              sessionStorage.setItem("txn-prefill", JSON.stringify({ category_id: "uncat" }));
-              onNavigate("transactions");
-            }}
-          >
-            review
-          </a>
-        </div>
-      )}
+      <FinancialInbox
+        inbox={inbox}
+        pairingId={pairingId}
+        error={inboxError}
+        onNavigate={onNavigate}
+        onReviewUncategorized={reviewUncategorized}
+        onPairTransfer={pairSuggestedTransfer}
+      />
 
       <div className="grid grid-top" style={{ gridTemplateColumns: "5fr 7fr", marginBottom: 14 }}>
         <div className="card">

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Plus, Pencil, Archive, RefreshCw } from "lucide-react";
+import { ACCOUNT_TYPE_COLORS, defaultAccountColor } from "@my-money/shared";
 import { api, fmtMoney, type AccountWithBalance } from "../api";
 
 const TYPES = ["chequing", "savings", "credit", "prepaid", "cash", "investment"] as const;
-const COLORS = ["#4f46e5", "#0ea5e9", "#16a34a", "#d97706", "#dc2626", "#9333ea", "#0d9488", "#64748b"];
+const COLORS = Object.values(ACCOUNT_TYPE_COLORS);
 
 interface FormState {
   id?: number;
@@ -25,7 +26,7 @@ const EMPTY: FormState = {
   last4: "",
   opening_balance: "0",
   opening_balance_date: "",
-  color: COLORS[0]!,
+  color: defaultAccountColor("chequing"),
 };
 
 export default function Accounts() {
@@ -93,13 +94,16 @@ export default function Accounts() {
 
       <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
         {accounts.map((a) => (
-          <div className="card" key={a.id} style={{ borderTop: `3px solid ${a.color}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
-              <div>
-                <h3>{a.name}</h3>
-                <div className="faint">
-                  {a.institution ?? "—"} · {a.type}
-                  {a.last4 ? ` · ••${a.last4}` : ""}
+          <div className="card account-card" key={a.id}>
+            <div className="account-card-head">
+              <div className="account-card-identity">
+                <span className="account-color-bar" style={{ background: a.color }} />
+                <div>
+                  <h3>{a.name}</h3>
+                  <div className="faint">
+                    {a.institution ?? "—"} · {a.type}
+                    {a.last4 ? ` · ••${a.last4}` : ""}
+                  </div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 4 }}>
@@ -166,7 +170,18 @@ export default function Accounts() {
               </div>
               <div className="form-row">
                 <label>Type</label>
-                <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value as FormState["type"] })}>
+                <select
+                  value={form.type}
+                  onChange={(e) => {
+                    const nextType = e.target.value as FormState["type"];
+                    const usesTypeDefault = form.color === defaultAccountColor(form.type);
+                    setForm({
+                      ...form,
+                      type: nextType,
+                      color: usesTypeDefault ? defaultAccountColor(nextType) : form.color,
+                    });
+                  }}
+                >
                   {TYPES.map((t) => (
                     <option key={t} value={t}>
                       {t}

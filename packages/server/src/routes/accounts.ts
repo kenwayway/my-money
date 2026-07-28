@@ -3,7 +3,11 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db } from "../db/connection.js";
 import { withBalance } from "../services/balances.js";
-import type { Account } from "@my-money/shared";
+import {
+  defaultAccountColor,
+  isDefaultAccountColor,
+  type Account,
+} from "@my-money/shared";
 
 const AccountBody = z.object({
   name: z.string().min(1),
@@ -13,7 +17,7 @@ const AccountBody = z.object({
   last4: z.string().max(4).nullable().optional(),
   opening_balance_cents: z.number().int().default(0),
   opening_balance_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-  color: z.string().default("#6366f1"),
+  color: z.string().optional(),
   icon: z.string().default("credit-card"),
 });
 
@@ -45,7 +49,7 @@ export const accountsRoute = new Hono()
         last4: b.last4 ?? null,
         opening_balance_cents: b.opening_balance_cents,
         opening_balance_date: b.opening_balance_date ?? null,
-        color: b.color,
+        color: b.color ?? defaultAccountColor(b.type),
         icon: b.icon,
       });
     const row = db.prepare("SELECT * FROM accounts WHERE id = ?").get(info.lastInsertRowid) as unknown as Account;
@@ -64,6 +68,11 @@ export const accountsRoute = new Hono()
       opening_balance_date: b.opening_balance_date === undefined ? existing.opening_balance_date : b.opening_balance_date,
       currency: b.currency ? b.currency.toUpperCase() : existing.currency,
       kind: b.type ? kindFor(b.type) : existing.kind,
+      color:
+        b.color ??
+        (b.type && isDefaultAccountColor(existing.color)
+          ? defaultAccountColor(b.type)
+          : existing.color),
     };
     db.prepare(
       `UPDATE accounts SET name=@name, institution=@institution, type=@type, kind=@kind, currency=@currency,

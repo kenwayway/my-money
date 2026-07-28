@@ -1,2 +1,2 @@
 export * from "./types.js";
-export * from "./importSpec.js";
+export * from "./accountColors.js";

@@ -1,0 +1,8 @@
+[mcp_servers.my-money]
+command = "npm.cmd"
+args = ["run", "mcp", "-w", "packages/server"]
+cwd = "G:\\Things\\my-money"
+enabled = true
+required = true
+startup_timeout_sec = 20
+tool_timeout_sec = 120

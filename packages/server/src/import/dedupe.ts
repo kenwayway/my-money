@@ -1,8 +1,16 @@
 import crypto from "node:crypto";
 import { db } from "../db/connection.js";
-import type { AppliedRow } from "./specApply.js";
 
-export interface DedupedRow extends AppliedRow {
+export interface FingerprintableRow {
+  row_index: number;
+  posted_date: string;
+  description_raw: string;
+  merchant_norm: string;
+  amount_cents: number;
+  balance_cents: number | null;
+}
+
+export interface DedupedRow extends FingerprintableRow {
   fingerprint: string;
   duplicate: boolean;
 }
@@ -28,7 +36,7 @@ function txnFingerprint(
  * statement is therefore a clean no-op, while genuinely repeated same-day
  * purchases still coexist.
  */
-export function dedupeRows(accountId: number, rows: AppliedRow[]): DedupedRow[] {
+export function dedupeRows(accountId: number, rows: FingerprintableRow[]): DedupedRow[] {
   const seenInFile = new Map<string, number>();
   const existingFp = new Set<string>(
     (db.prepare("SELECT fingerprint FROM transactions WHERE account_id = ?").all(accountId) as {

@@ -3,8 +3,9 @@ import type {
   Category,
   NetWorthSummary,
   SpendingSummary,
-  AnalyzeResult,
-  ImportSpec,
+  FinancialInboxSummary,
+  StatementDetail,
+  StatementRecord,
 } from "@my-money/shared";
 
 async function j<T>(res: Response): Promise<T> {
@@ -46,17 +47,17 @@ export const api = {
       body: JSON.stringify(body),
     }).then((r) => j<T>(r)),
   del: <T>(path: string) => fetch(`/api${path}`, { method: "DELETE" }).then((r) => j<T>(r)),
-
-  analyzeImport: (file: File, accountId: number, spec?: ImportSpec) => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("account_id", String(accountId));
-    if (spec) fd.append("spec_json", JSON.stringify(spec));
-    return fetch("/api/imports/analyze", { method: "POST", body: fd }).then((r) => j<AnalyzeResult>(r));
-  },
 };
 
-export type { AccountWithBalance, Category, NetWorthSummary, SpendingSummary, AnalyzeResult };
+export type {
+  AccountWithBalance,
+  Category,
+  NetWorthSummary,
+  SpendingSummary,
+  FinancialInboxSummary,
+  StatementDetail,
+  StatementRecord,
+};
 
 export interface TxnRow {
   id: number;

@@ -30,7 +30,11 @@ import {
   missingFxCurrenciesForRange,
   monthlySpendingByCategory,
 } from "./services/spending.js";
-import type { Account, Category } from "@my-money/shared";
+import {
+  defaultAccountColor,
+  type Account,
+  type Category,
+} from "@my-money/shared";
 
 initDb();
 seedDb();
@@ -128,8 +132,9 @@ const TOOLS: AnyTool[] = [
     handler(a) {
       const info = db
         .prepare(
-          `INSERT INTO accounts (name, institution, type, kind, currency, last4, opening_balance_cents, opening_balance_date)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO accounts
+           (name, institution, type, kind, currency, last4, opening_balance_cents, opening_balance_date, color)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           a.name,
@@ -139,7 +144,8 @@ const TOOLS: AnyTool[] = [
           (a.currency ?? "CAD").toUpperCase(),
           a.last4 ?? null,
           a.opening_balance_cents ?? 0,
-          a.opening_balance_date ?? null
+          a.opening_balance_date ?? null,
+          defaultAccountColor(a.type)
         );
       const account = db.prepare("SELECT * FROM accounts WHERE id = ?").get(info.lastInsertRowid) as unknown as Account;
       return withBalance(account);
@@ -212,6 +218,13 @@ const TOOLS: AnyTool[] = [
       // categories: user rule > explicit from AI > learned AI rule
       const ruleResults = categorizeByRules(toInsert.map((r) => r.merchant_norm));
       const payloadSha = crypto.createHash("sha256").update(JSON.stringify(txns)).digest("hex");
+      const statementStartDate = rows.reduce(
+        (min, r) => (r.posted_date < min ? r.posted_date : min),
+        rows[0]!.posted_date
+      );
+      const statementEndDate =
+        a.statement_end_date ??
+        rows.reduce((max, r) => (r.posted_date > max ? r.posted_date : max), rows[0]!.posted_date);
 
       let balanceCheck: Record<string, unknown> | undefined;
       const reconciliationRejected = Symbol("reconciliation-rejected");
@@ -222,8 +235,10 @@ const TOOLS: AnyTool[] = [
         result = tx(() => {
           const importInfo = db
             .prepare(
-              `INSERT INTO imports (account_id, file_name, file_sha256, spec_id, row_count, inserted_count, skipped_dupes, status)
-               VALUES (?, ?, ?, NULL, ?, ?, ?, 'committed')`
+              `INSERT INTO imports
+               (account_id, file_name, file_sha256, spec_id, row_count, inserted_count, skipped_dupes, status,
+                source, statement_start_date, statement_end_date, statement_balance_cents, validation_status)
+               VALUES (?, ?, ?, NULL, ?, ?, ?, 'committed', 'mcp', ?, ?, ?, 'passed')`
             )
             .run(
               account.id,
@@ -231,7 +246,10 @@ const TOOLS: AnyTool[] = [
               payloadSha,
               deduped.length,
               toInsert.length,
-              deduped.length - toInsert.length
+              deduped.length - toInsert.length,
+              statementStartDate,
+              statementEndDate,
+              a.statement_end_balance_cents ?? null
             );
           const importId = Number(importInfo.lastInsertRowid);
 
@@ -286,11 +304,11 @@ const TOOLS: AnyTool[] = [
 
           // Reconcile while the insert transaction is still open. A mismatch
           // rolls back the transactions, import record, and learned AI rules.
+          let computedBalance: number | null = null;
+          let reconciliationStatus: "not_checked" | "matched" | "mismatch" = "not_checked";
           if (a.statement_end_balance_cents !== undefined) {
             const expected = a.statement_end_balance_cents;
-            const endDate =
-              a.statement_end_date ??
-              rows.reduce((max, r) => (r.posted_date > max ? r.posted_date : max), rows[0]!.posted_date);
+            const endDate = statementEndDate;
             if (account.opening_balance_date && endDate <= account.opening_balance_date) {
               balanceCheck = {
                 status: "n/a",
@@ -298,6 +316,8 @@ const TOOLS: AnyTool[] = [
               };
             } else {
               const computed = balanceAsOf(account, endDate);
+              computedBalance = computed;
+              reconciliationStatus = computed === expected ? "matched" : "mismatch";
               const fmt = (cents: number) => `${(cents / 100).toFixed(2)} ${account.currency}`;
               balanceCheck =
                 computed === expected
@@ -316,6 +336,11 @@ const TOOLS: AnyTool[] = [
               if (computed !== expected && !a.allow_balance_mismatch) throw reconciliationRejected;
             }
           }
+          db.prepare(
+            `UPDATE imports
+             SET computed_balance_cents = ?, reconciliation_status = ?
+             WHERE id = ?`
+          ).run(computedBalance, reconciliationStatus, importId);
 
           return { import_id: importId, inserted, skipped_duplicates: deduped.length - inserted };
         });
@@ -550,6 +575,8 @@ const TOOLS: AnyTool[] = [
       return db
         .prepare(
           `SELECT i.id, i.file_name, a.name AS account, i.inserted_count, i.skipped_dupes, i.status,
+                  i.source, i.statement_start_date, i.statement_end_date,
+                  i.statement_balance_cents, i.computed_balance_cents, i.reconciliation_status,
                   datetime(i.created_at, 'unixepoch') AS created_at
            FROM imports i JOIN accounts a ON a.id = i.account_id ORDER BY i.created_at DESC LIMIT 50`
         )
