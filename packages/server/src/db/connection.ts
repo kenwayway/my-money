@@ -34,4 +34,20 @@ export function tx<T>(fn: () => T): T {
 export function initDb(): void {
   const schema = fs.readFileSync(path.join(here, "schema.sql"), "utf8");
   db.exec(schema);
+
+  // Repair legacy/non-reciprocal links before enforcing one-to-one pairing.
+  // A valid pair is always A → B and B → A; anything else is safer unpaired.
+  db.exec(`
+    UPDATE transactions
+    SET transfer_peer_id = NULL, is_transfer = 0
+    WHERE transfer_peer_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions AS peer
+        WHERE peer.id = transactions.transfer_peer_id
+          AND peer.transfer_peer_id = transactions.id
+      );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_transfer_peer_unique
+      ON transactions(transfer_peer_id)
+      WHERE transfer_peer_id IS NOT NULL;
+  `);
 }

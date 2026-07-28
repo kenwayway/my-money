@@ -151,6 +151,20 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
         <MonthPicker value={month} onChange={changeMonth} />
       </div>
 
+      {(!netWorth.fx_complete || (spending && !spending.fx_complete)) && (
+        <div className="alert error" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <AlertCircle size={15} />
+          CAD totals are unavailable until FX rates are set for{" "}
+          {[...new Set([
+            ...netWorth.missing_fx_currencies,
+            ...(spending?.missing_fx_currencies ?? []),
+          ])].join(", ")}.{" "}
+          <a style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => onNavigate("settings")}>
+            set rates
+          </a>
+        </div>
+      )}
+
       {spending && spending.uncategorized_count > 0 && (
         <div className="alert warn" style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <AlertCircle size={15} />
@@ -416,8 +430,8 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
                 <td className={`money ${a.balance_cents < 0 ? "neg" : ""}`} style={{ textAlign: "right" }}>
                   {fmtMoney(a.balance_cents, a.currency)}
                 </td>
-                <td className={`money ${a.balance_cad_cents < 0 ? "neg" : ""}`} style={{ textAlign: "right" }}>
-                  {fmtMoney(a.balance_cad_cents)}
+                <td className={`money ${a.balance_cad_cents !== null && a.balance_cad_cents < 0 ? "neg" : ""}`} style={{ textAlign: "right" }}>
+                  {a.balance_cad_cents === null ? "FX required" : fmtMoney(a.balance_cad_cents)}
                 </td>
               </tr>
             ))}
@@ -426,10 +440,12 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
             <tfoot>
               <tr className="total-row">
                 <td colSpan={4}>
-                  Net worth · assets {fmtMoney(netWorth.assets_cad_cents)} · liabilities {fmtMoney(netWorth.liabilities_cad_cents)}
+                  {netWorth.fx_complete && netWorth.assets_cad_cents !== null && netWorth.liabilities_cad_cents !== null
+                    ? `Net worth · assets ${fmtMoney(netWorth.assets_cad_cents)} · liabilities ${fmtMoney(netWorth.liabilities_cad_cents)}`
+                    : "Net worth unavailable · missing FX rates"}
                 </td>
                 <td className="money" style={{ textAlign: "right" }}>
-                  {fmtMoney(netWorth.total_cad_cents)}
+                  {netWorth.total_cad_cents === null ? "—" : fmtMoney(netWorth.total_cad_cents)}
                 </td>
               </tr>
             </tfoot>

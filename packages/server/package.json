@@ -8,7 +8,9 @@
     "build": "tsc --noEmit",
     "start": "tsx src/index.ts",
     "mcp": "tsx src/mcp.ts",
-    "test:mcp": "tsx test/mcp-e2e.ts"
+    "test:mcp": "tsx test/mcp-e2e.ts",
+    "test:core": "tsx test/core.ts",
+    "test": "npm run test:core && npm run test:mcp"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

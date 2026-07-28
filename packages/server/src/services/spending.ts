@@ -13,9 +13,27 @@ export function currentLocalDate(): string {
   return format(new Date(), "yyyy-MM-dd");
 }
 
-export function fxRatesByAccount(): Map<number, number> {
+export function fxRatesByAccount(): Map<number, number | null> {
   const accounts = db.prepare("SELECT id, currency FROM accounts").all() as { id: number; currency: string }[];
   return new Map(accounts.map((a) => [a.id, fxRateToCad(a.currency)]));
+}
+
+/** Missing rates that actually affect spending/cash-flow data in a month range. */
+export function missingFxCurrenciesForRange(fromMonth: string, toMonth: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT a.currency
+       FROM transactions t
+       JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN fx_rates f ON f.currency = a.currency
+       WHERE a.currency != 'CAD'
+         AND f.currency IS NULL
+         AND t.is_transfer = 0
+         AND substr(t.posted_date, 1, 7) BETWEEN ? AND ?
+       ORDER BY a.currency`
+    )
+    .all(fromMonth, toMonth) as { currency: string }[];
+  return rows.map((r) => r.currency);
 }
 
 /**
@@ -25,7 +43,7 @@ export function fxRatesByAccount(): Map<number, number> {
  */
 export function monthlySpendingByCategory(
   month: string,
-  rateByAccount: Map<number, number> = fxRatesByAccount()
+  rateByAccount: Map<number, number | null> = fxRatesByAccount()
 ): CategorySpend[] {
   const spendRows = db
     .prepare(
@@ -52,7 +70,9 @@ export function monthlySpendingByCategory(
   const byCategory = new Map<string, CategorySpend>();
   for (const r of spendRows) {
     if (r.category_type === "income") continue;
-    const cad = Math.round(-r.total_cents * (rateByAccount.get(r.account_id) ?? 1));
+    const rate = rateByAccount.get(r.account_id);
+    if (rate == null) continue;
+    const cad = Math.round(-r.total_cents * rate);
     if (cad <= 0) continue;
     const key = String(r.category_id);
     const cur = byCategory.get(key);

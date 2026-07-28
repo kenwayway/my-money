@@ -3,7 +3,7 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db, tx } from "../db/connection.js";
 import { upsertRuleSafe } from "../services/categorizer.js";
-import { pairTransfer } from "../services/transfers.js";
+import { pairTransfer, unmarkTransferInTransaction } from "../services/transfers.js";
 import type { Transaction } from "@my-money/shared";
 
 const PatchBody = z.object({
@@ -88,12 +88,8 @@ export const transactionsRoute = new Hono()
       }
       if (b.notes !== undefined) db.prepare("UPDATE transactions SET notes = ? WHERE id = ?").run(b.notes, id);
       if (b.is_transfer !== undefined) {
-        db.prepare("UPDATE transactions SET is_transfer = ? WHERE id = ?").run(b.is_transfer, id);
-        if (b.is_transfer === 0) {
-          // dissolve the pairing on both sides — the peer must not keep a dangling pointer
-          db.prepare("UPDATE transactions SET transfer_peer_id = NULL WHERE id = ?").run(id);
-          db.prepare("UPDATE transactions SET transfer_peer_id = NULL WHERE transfer_peer_id = ?").run(id);
-        }
+        if (b.is_transfer === 1) db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
+        else unmarkTransferInTransaction(id);
       }
     });
 
@@ -118,13 +114,20 @@ export const transactionsRoute = new Hono()
   })
   .post(
     "/pair-transfer",
-    zValidator("json", z.object({ id_a: z.number().int(), id_b: z.number().int() })),
+    zValidator(
+      "json",
+      z.object({
+        id_a: z.number().int(),
+        id_b: z.number().int(),
+        allow_mismatch: z.boolean().default(false),
+      })
+    ),
     (c) => {
-      const { id_a, id_b } = c.req.valid("json");
+      const { id_a, id_b, allow_mismatch } = c.req.valid("json");
       try {
-        pairTransfer(id_a, id_b);
+        pairTransfer(id_a, id_b, allow_mismatch);
       } catch (err) {
-        return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
       }
       return c.json({ paired: true });
     }

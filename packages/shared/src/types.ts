@@ -26,7 +26,9 @@ export interface Account {
 
 export interface AccountWithBalance extends Account {
   balance_cents: number;
-  balance_cad_cents: number;
+  /** null when a non-CAD account has no configured FX rate. */
+  balance_cad_cents: number | null;
+  fx_rate_to_cad: number | null;
   txn_count: number;
   /** Where the balance anchor comes from: a manual snapshot or the opening balance. */
   balance_source: "snapshot" | "opening";
@@ -103,9 +105,12 @@ export interface FxRate {
 }
 
 export interface NetWorthSummary {
-  total_cad_cents: number;
-  assets_cad_cents: number;
-  liabilities_cad_cents: number;
+  /** Aggregate totals are null rather than silently wrong when FX is missing. */
+  total_cad_cents: number | null;
+  assets_cad_cents: number | null;
+  liabilities_cad_cents: number | null;
+  fx_complete: boolean;
+  missing_fx_currencies: string[];
   accounts: AccountWithBalance[];
 }
 
@@ -129,6 +134,8 @@ export interface SpendingSummary {
   by_category: CategorySpend[];
   trend: MonthSpend[];
   uncategorized_count: number;
+  fx_complete: boolean;
+  missing_fx_currencies: string[];
 }
 
 /** A parsed transaction row from a CSV, before it becomes a DB transaction. */

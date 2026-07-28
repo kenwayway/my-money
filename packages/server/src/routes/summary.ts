@@ -2,7 +2,12 @@ import { Hono } from "hono";
 import { db } from "../db/connection.js";
 import { netWorth } from "../services/balances.js";
 import { suggestTransferPairs } from "../services/transfers.js";
-import { currentLocalMonth, fxRatesByAccount, monthlySpendingByCategory } from "../services/spending.js";
+import {
+  currentLocalMonth,
+  fxRatesByAccount,
+  missingFxCurrenciesForRange,
+  monthlySpendingByCategory,
+} from "../services/spending.js";
 import type { MonthSpend } from "@my-money/shared";
 
 export const summaryRoute = new Hono()
@@ -21,6 +26,7 @@ export const summaryRoute = new Hono()
       const d = new Date(y!, m! - 1 - i, 1);
       months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
     }
+    const missingFx = missingFxCurrenciesForRange(months[0]!, months[months.length - 1]!);
     const trendRows = db
       .prepare(
         `SELECT t.account_id, substr(t.posted_date, 1, 7) AS ym,
@@ -44,7 +50,8 @@ export const summaryRoute = new Hono()
       let income = 0;
       for (const r of trendRows) {
         if (r.ym !== ym) continue;
-        const rate = rateByAccount.get(r.account_id) ?? 1;
+        const rate = rateByAccount.get(r.account_id);
+        if (rate == null) continue;
         expense += Math.round(r.expense * rate);
         income += Math.round(r.income * rate);
       }
@@ -62,6 +69,8 @@ export const summaryRoute = new Hono()
       by_category: byCategory,
       trend,
       uncategorized_count: uncategorized,
+      fx_complete: missingFx.length === 0,
+      missing_fx_currencies: missingFx,
     });
   })
   .get("/transfer-suggestions", (c) => c.json(suggestTransferPairs()));

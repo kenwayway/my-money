@@ -3,30 +3,81 @@ import { db, tx } from "../db/connection.js";
 interface PairSide {
   id: number;
   account_id: number;
+  currency: string;
   posted_date: string;
   description_raw: string;
   amount_cents: number;
+  transfer_peer_id: number | null;
 }
 
 /**
  * Link two transactions as the two sides of one internal transfer: both are
  * marked is_transfer and point at each other via transfer_peer_id.
- * Throws if either id is missing or both are the same transaction.
+ * Existing pairings are dissolved first so stale third-party links cannot
+ * survive. Amount/currency mismatches require an explicit override.
  */
-export function pairTransfer(idA: number, idB: number): { a: PairSide; b: PairSide } {
+export function pairTransfer(
+  idA: number,
+  idB: number,
+  allowMismatch = false
+): { a: PairSide; b: PairSide; mismatch: boolean } {
   if (idA === idB) throw new Error("cannot pair a transaction with itself");
   const get = db.prepare(
-    "SELECT id, account_id, posted_date, description_raw, amount_cents FROM transactions WHERE id = ?"
+    `SELECT t.id, t.account_id, a.currency, t.posted_date, t.description_raw,
+            t.amount_cents, t.transfer_peer_id
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE t.id = ?`
   );
   const a = get.get(idA) as PairSide | undefined;
   const b = get.get(idB) as PairSide | undefined;
   if (!a) throw new Error(`transaction ${idA} not found`);
   if (!b) throw new Error(`transaction ${idB} not found`);
+  if (a.account_id === b.account_id) throw new Error("transfer sides must belong to different accounts");
+  const mismatch = a.currency !== b.currency || a.amount_cents + b.amount_cents !== 0;
+  if (mismatch && !allowMismatch) {
+    throw new Error(
+      `transfer sides must use the same currency and exact opposite amounts; ` +
+        `got ${a.amount_cents} ${a.currency} and ${b.amount_cents} ${b.currency}`
+    );
+  }
+
   tx(() => {
+    for (const side of [a, b]) {
+      if (side.transfer_peer_id !== null && side.transfer_peer_id !== idA && side.transfer_peer_id !== idB) {
+        db.prepare(
+          `UPDATE transactions SET transfer_peer_id = NULL, is_transfer = 0
+           WHERE id = ? AND transfer_peer_id = ?`
+        ).run(side.transfer_peer_id, side.id);
+      }
+    }
     db.prepare("UPDATE transactions SET is_transfer = 1, transfer_peer_id = ? WHERE id = ?").run(idB, idA);
     db.prepare("UPDATE transactions SET is_transfer = 1, transfer_peer_id = ? WHERE id = ?").run(idA, idB);
   });
-  return { a, b };
+  return { a, b, mismatch };
+}
+
+function unmarkTransferUpdates(id: number): void {
+  const row = db.prepare("SELECT transfer_peer_id FROM transactions WHERE id = ?").get(id) as
+    | { transfer_peer_id: number | null }
+    | undefined;
+  if (!row) throw new Error(`transaction ${id} not found`);
+  db.prepare("UPDATE transactions SET is_transfer = 0, transfer_peer_id = NULL WHERE id = ?").run(id);
+  if (row.transfer_peer_id !== null) {
+    db.prepare(
+      `UPDATE transactions SET is_transfer = 0, transfer_peer_id = NULL
+       WHERE id = ? AND transfer_peer_id = ?`
+    ).run(row.transfer_peer_id, id);
+  }
+}
+
+/** Unmark one transfer and dissolve its reciprocal pair, if present. */
+export function unmarkTransfer(id: number): void {
+  tx(() => unmarkTransferUpdates(id));
+}
+
+/** Same operation for callers that already own a database transaction. */
+export function unmarkTransferInTransaction(id: number): void {
+  unmarkTransferUpdates(id);
 }
 
 export interface TransferSuggestion {

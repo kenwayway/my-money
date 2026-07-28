@@ -2,9 +2,19 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db, tx } from "../db/connection.js";
+import { createDatabaseBackup } from "../db/backup.js";
 import type { MerchantRule } from "@my-money/shared";
 
 export const settingsRoute = new Hono()
+  .get("/backup", (c) => {
+    const backup = createDatabaseBackup();
+    return c.body(backup.bytes, 200, {
+      "Content-Type": "application/vnd.sqlite3",
+      "Content-Disposition": `attachment; filename="${backup.fileName}"`,
+      "Content-Length": String(backup.bytes.byteLength),
+      "Cache-Control": "no-store",
+    });
+  })
   .get("/", (c) => {
     const rows = db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
     const settings = Object.fromEntries(rows.map((r) => [r.key, r.value]));

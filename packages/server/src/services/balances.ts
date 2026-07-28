@@ -1,12 +1,12 @@
 import { db } from "../db/connection.js";
 import type { Account, AccountWithBalance, NetWorthSummary } from "@my-money/shared";
 
-export function fxRateToCad(currency: string): number {
+export function fxRateToCad(currency: string): number | null {
   if (currency === "CAD") return 1;
   const row = db.prepare("SELECT rate_to_cad FROM fx_rates WHERE currency = ?").get(currency) as
     | { rate_to_cad: number }
     | undefined;
-  return row?.rate_to_cad ?? 1;
+  return row?.rate_to_cad ?? null;
 }
 
 interface Anchor {
@@ -77,7 +77,8 @@ export function withBalance(account: Account): AccountWithBalance {
   return {
     ...account,
     balance_cents,
-    balance_cad_cents: Math.round(balance_cents * rate),
+    balance_cad_cents: rate === null ? null : Math.round(balance_cents * rate),
+    fx_rate_to_cad: rate,
     txn_count,
     balance_source,
     balance_as_of,
@@ -88,16 +89,21 @@ export function netWorth(): NetWorthSummary {
   const accounts = (db.prepare("SELECT * FROM accounts WHERE archived = 0 ORDER BY created_at").all() as unknown as Account[]).map(
     withBalance
   );
+  const missing = [...new Set(accounts.filter((a) => a.fx_rate_to_cad === null).map((a) => a.currency))].sort();
   let assets = 0;
   let liabilities = 0;
   for (const a of accounts) {
+    if (a.balance_cad_cents === null) continue;
     if (a.kind === "asset") assets += a.balance_cad_cents;
     else liabilities += a.balance_cad_cents; // liability balances are naturally negative
   }
+  const complete = missing.length === 0;
   return {
-    total_cad_cents: assets + liabilities,
-    assets_cad_cents: assets,
-    liabilities_cad_cents: liabilities,
+    total_cad_cents: complete ? assets + liabilities : null,
+    assets_cad_cents: complete ? assets : null,
+    liabilities_cad_cents: complete ? liabilities : null,
+    fx_complete: complete,
+    missing_fx_currencies: missing,
     accounts,
   };
 }

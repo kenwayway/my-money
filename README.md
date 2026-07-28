@@ -32,7 +32,7 @@ AI 会调用这些工具：
 |---|---|
 | `list_accounts` / `create_account` | 查看/创建账户（credit 自动记为负债） |
 | `list_categories` | 分类名列表（AI 分类时用这些名字） |
-| `import_transactions` | **核心**：批量写入交易（带符号整数分，+收入/−支出）。自动去重——重叠账单随便重复导入；AI 给的分类会记成商户规则，下次同商户自动分类。可传账单期末余额（`statement_end_balance_cents`）自动对账，符号解析错误当场发现 |
+| `import_transactions` | **核心**：批量写入交易（带符号整数分，+收入/−支出）。自动去重——重叠账单随便重复导入；AI 给的分类会记成商户规则，下次同商户自动分类。可传账单期末余额（`statement_end_balance_cents`）自动对账；不一致时默认整批回滚 |
 | `list_transactions` | 按账户/月份/分类/关键词查询 |
 | `set_category` | 修正分类（生成用户规则，可批量应用到同商户） |
 | `set_note` | 给交易加备注（账单描述看不出是什么时用） |
@@ -65,6 +65,7 @@ MCP server 和 Web 界面共用同一个数据库（WAL 模式），可以同时
 ## 数据保障
 
 - 金额全部为**带符号整数分**，无浮点误差
+- 非 CAD 账户缺少汇率时，CAD 汇总会明确显示不可用，不会静默按 1:1 计算
 - 去重三层：整文件哈希警告、逐行指纹（含同日同额同商户的序号）、数据库 UNIQUE 约束
 - 每次导入（Web 或 MCP）都是一个批次，可整体撤销
 - 分类规则：你的手动修正（user）永远优先于 AI 写入的规则（ai）
@@ -79,4 +80,8 @@ TypeScript monorepo（npm workspaces）：
 | `packages/web` | React 19 + Vite + Recharts，CSS 变量主题（明/暗） |
 | `packages/shared` | 共享类型 + zod schema |
 
-数据库：`data/money.db`（备份 = 复制文件；`MY_MONEY_DB` 环境变量可改路径）。
+数据库：`data/money.db`（`MY_MONEY_DB` 环境变量可改路径）。
+
+备份请在 Settings 点击 **Download backup**。应用使用 SQLite WAL 模式，运行中直接复制
+`money.db` 可能漏掉尚在 `money.db-wal` 里的已提交数据；下载功能会生成一致、可独立恢复的
+SQLite 快照。只有在 Web 和 MCP server 都已停止后，才应直接复制 `money.db`。

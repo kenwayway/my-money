@@ -130,7 +130,11 @@ export default function Accounts() {
               {fmtMoney(a.balance_cents, a.currency)}
             </div>
             <div className="faint">
-              {a.currency !== "CAD" ? `≈ ${fmtMoney(a.balance_cad_cents)} CAD · ` : ""}
+              {a.currency !== "CAD"
+                ? a.balance_cad_cents === null
+                  ? "FX rate required · "
+                  : `≈ ${fmtMoney(a.balance_cad_cents)} CAD · `
+                : ""}
               {a.balance_source === "snapshot"
                 ? `as of ${a.balance_as_of}`
                 : `${a.txn_count} transactions`}

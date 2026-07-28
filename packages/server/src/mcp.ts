@@ -23,8 +23,13 @@ import { seedDb } from "./db/seed.js";
 import { normalizeMerchant, upsertRuleSafe, categorizeByRules } from "./services/categorizer.js";
 import { dedupeRows } from "./import/dedupe.js";
 import { netWorth, withBalance, balanceAsOf } from "./services/balances.js";
-import { suggestTransferPairs, pairTransfer } from "./services/transfers.js";
-import { currentLocalMonth, currentLocalDate, monthlySpendingByCategory } from "./services/spending.js";
+import { suggestTransferPairs, pairTransfer, unmarkTransfer } from "./services/transfers.js";
+import {
+  currentLocalMonth,
+  currentLocalDate,
+  missingFxCurrenciesForRange,
+  monthlySpendingByCategory,
+} from "./services/spending.js";
 import type { Account, Category } from "@my-money/shared";
 
 initDb();
@@ -153,7 +158,7 @@ const TOOLS: AnyTool[] = [
   tool({
     name: "import_transactions",
     description:
-      "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; use 'Transfer' for e-transfers between the user's own accounts and credit-card payments). Categories you provide are remembered as merchant rules for future imports; where the user has previously corrected a merchant's category, that user rule takes precedence over your suggestion. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is then reconciled against it and sign mistakes are caught immediately. Returns an import_id that can undo the whole batch.",
+      "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; use 'Transfer' for e-transfers between the user's own accounts and credit-card payments). Categories you provide are remembered as merchant rules for future imports; where the user has previously corrected a merchant's category, that user rule takes precedence over your suggestion. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is reconciled before commit and rolls back by default if the balance does not match. Successful imports return an import_id that can undo the whole batch.",
     input: z.strictObject({
       account: AccountRef,
       source_label: z.string().optional().describe("e.g. the statement file name, for the import history"),
@@ -167,6 +172,12 @@ const TOOLS: AnyTool[] = [
       statement_end_date: DateStr.optional().describe(
         "YYYY-MM-DD the closing balance refers to (the statement period end). Defaults to the latest transaction date in this import."
       ),
+      allow_balance_mismatch: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Explicitly commit even if reconciliation fails. Leave false unless the mismatch is understood (for example, older transactions have not been imported yet)."
+        ),
       transactions: z
         .array(
           z.strictObject({
@@ -202,103 +213,124 @@ const TOOLS: AnyTool[] = [
       const ruleResults = categorizeByRules(toInsert.map((r) => r.merchant_norm));
       const payloadSha = crypto.createHash("sha256").update(JSON.stringify(txns)).digest("hex");
 
-      const result = tx(() => {
-        const importInfo = db
-          .prepare(
-            `INSERT INTO imports (account_id, file_name, file_sha256, spec_id, row_count, inserted_count, skipped_dupes, status)
-             VALUES (?, ?, ?, NULL, ?, ?, ?, 'committed')`
-          )
-          .run(
-            account.id,
-            a.source_label ?? "mcp-import",
-            payloadSha,
-            deduped.length,
-            toInsert.length,
-            deduped.length - toInsert.length
-          );
-        const importId = Number(importInfo.lastInsertRowid);
+      let balanceCheck: Record<string, unknown> | undefined;
+      const reconciliationRejected = Symbol("reconciliation-rejected");
+      type ImportResult = { import_id: number; inserted: number; skipped_duplicates: number };
+      let result: ImportResult;
 
-        const insert = db.prepare(
-          `INSERT OR IGNORE INTO transactions
-           (account_id, posted_date, description_raw, merchant_norm, amount_cents, category_id, category_source, is_transfer, import_id, fingerprint)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        );
-        let inserted = 0;
-        for (const r of deduped) {
-          if (r.duplicate) continue;
-          const provided = txns[r.row_index]?.category;
-          const rule = ruleResults.get(r.merchant_norm);
-          let categoryId: number | null = null;
-          let source: string | null = null;
-          // precedence: user-made rule > AI-provided category > AI-made rule.
-          // A user's correction is law — the AI's per-import suggestion never overrides it.
-          if (rule?.category_id != null && rule.rule_source === "user") {
-            categoryId = rule.category_id;
-            source = "rule";
+      try {
+        result = tx(() => {
+          const importInfo = db
+            .prepare(
+              `INSERT INTO imports (account_id, file_name, file_sha256, spec_id, row_count, inserted_count, skipped_dupes, status)
+               VALUES (?, ?, ?, NULL, ?, ?, ?, 'committed')`
+            )
+            .run(
+              account.id,
+              a.source_label ?? "mcp-import",
+              payloadSha,
+              deduped.length,
+              toInsert.length,
+              deduped.length - toInsert.length
+            );
+          const importId = Number(importInfo.lastInsertRowid);
+
+          const insert = db.prepare(
+            `INSERT OR IGNORE INTO transactions
+             (account_id, posted_date, description_raw, merchant_norm, amount_cents, category_id, category_source, is_transfer, import_id, fingerprint)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          );
+          let inserted = 0;
+          for (const r of deduped) {
+            if (r.duplicate) continue;
+            const provided = txns[r.row_index]?.category;
+            const rule = ruleResults.get(r.merchant_norm);
+            let categoryId: number | null = null;
+            let source: string | null = null;
+            // precedence: user-made rule > AI-provided category > AI-made rule.
+            // A user's correction is law — the AI's per-import suggestion never overrides it.
+            if (rule?.category_id != null && rule.rule_source === "user") {
+              categoryId = rule.category_id;
+              source = "rule";
+            }
+            if (provided) {
+              const cat = cats.get(provided.toLowerCase());
+              if (!cat) {
+                unknownCategories.add(provided);
+              } else if (categoryId === null) {
+                categoryId = cat.id;
+                source = "ai";
+                upsertRuleSafe(r.merchant_norm, cat.id, "ai"); // remembered only if the batch commits
+              }
+            }
+            if (categoryId === null && rule?.category_id != null) {
+              categoryId = rule.category_id;
+              source = "rule";
+            }
+            const isTransfer = categoryId !== null && cats.get("transfer")?.id === categoryId ? 1 : 0;
+            const info = insert.run(
+              account.id,
+              r.posted_date,
+              r.description_raw,
+              r.merchant_norm,
+              r.amount_cents,
+              categoryId,
+              source,
+              isTransfer,
+              importId,
+              r.fingerprint
+            );
+            inserted += Number(info.changes);
           }
-          if (provided) {
-            const cat = cats.get(provided.toLowerCase());
-            if (!cat) {
-              unknownCategories.add(provided);
-            } else if (categoryId === null) {
-              categoryId = cat.id;
-              source = "ai";
-              upsertRuleSafe(r.merchant_norm, cat.id, "ai"); // remember for future imports
+          db.prepare("UPDATE imports SET inserted_count = ? WHERE id = ?").run(inserted, importId);
+
+          // Reconcile while the insert transaction is still open. A mismatch
+          // rolls back the transactions, import record, and learned AI rules.
+          if (a.statement_end_balance_cents !== undefined) {
+            const expected = a.statement_end_balance_cents;
+            const endDate =
+              a.statement_end_date ??
+              rows.reduce((max, r) => (r.posted_date > max ? r.posted_date : max), rows[0]!.posted_date);
+            if (account.opening_balance_date && endDate <= account.opening_balance_date) {
+              balanceCheck = {
+                status: "n/a",
+                message: `statement ends on/before the account's opening-balance date (${account.opening_balance_date}) — nothing to reconcile against`,
+              };
+            } else {
+              const computed = balanceAsOf(account, endDate);
+              const fmt = (cents: number) => `${(cents / 100).toFixed(2)} ${account.currency}`;
+              balanceCheck =
+                computed === expected
+                  ? { status: "ok", as_of: endDate, balance_cents: computed }
+                  : {
+                      status: "mismatch",
+                      as_of: endDate,
+                      computed_cents: computed,
+                      statement_cents: expected,
+                      diff_cents: computed - expected,
+                      message:
+                        `computed balance ${fmt(computed)} as of ${endDate} does not match the statement's closing balance ${fmt(expected)} ` +
+                        `(off by ${fmt(computed - expected)}). Likely causes: wrong amount signs, earlier transactions not yet imported, ` +
+                        `or an unset/incorrect opening balance.`,
+                    };
+              if (computed !== expected && !a.allow_balance_mismatch) throw reconciliationRejected;
             }
           }
-          if (categoryId === null && rule?.category_id != null) {
-            categoryId = rule.category_id;
-            source = "rule";
-          }
-          const isTransfer = categoryId !== null && cats.get("transfer")?.id === categoryId ? 1 : 0;
-          const info = insert.run(
-            account.id,
-            r.posted_date,
-            r.description_raw,
-            r.merchant_norm,
-            r.amount_cents,
-            categoryId,
-            source,
-            isTransfer,
-            importId,
-            r.fingerprint
-          );
-          inserted += Number(info.changes);
-        }
-        db.prepare("UPDATE imports SET inserted_count = ? WHERE id = ?").run(inserted, importId);
-        return { import_id: importId, inserted, skipped_duplicates: deduped.length - inserted };
-      });
 
-      // optional reconciliation against the statement's closing balance — the
-      // deterministic net for sign-convention or parsing mistakes by the AI client
-      let balanceCheck: Record<string, unknown> | undefined;
-      if (a.statement_end_balance_cents !== undefined) {
-        const expected = a.statement_end_balance_cents;
-        const endDate =
-          a.statement_end_date ?? rows.reduce((max, r) => (r.posted_date > max ? r.posted_date : max), rows[0]!.posted_date);
-        if (account.opening_balance_date && endDate <= account.opening_balance_date) {
-          balanceCheck = {
-            status: "n/a",
-            message: `statement ends on/before the account's opening-balance date (${account.opening_balance_date}) — nothing to reconcile against`,
-          };
-        } else {
-          const computed = balanceAsOf(account, endDate);
-          const fmt = (cents: number) => `${(cents / 100).toFixed(2)} ${account.currency}`;
-          balanceCheck =
-            computed === expected
-              ? { status: "ok", as_of: endDate, balance_cents: computed }
-              : {
-                  status: "mismatch",
-                  as_of: endDate,
-                  computed_cents: computed,
-                  statement_cents: expected,
-                  diff_cents: computed - expected,
-                  message:
-                    `computed balance ${fmt(computed)} as of ${endDate} does not match the statement's closing balance ${fmt(expected)} (off by ${fmt(computed - expected)}). ` +
-                    `Likely causes: wrong amount signs in this import (undo with undo_import(${result.import_id})), ` +
-                    `earlier transactions not yet imported, or an unset/incorrect opening balance on the account.`,
-                };
-        }
+          return { import_id: importId, inserted, skipped_duplicates: deduped.length - inserted };
+        });
+      } catch (err) {
+        if (err !== reconciliationRejected) throw err;
+        return {
+          rejected: true,
+          inserted: 0,
+          skipped_duplicates: deduped.length - toInsert.length,
+          account: account.name,
+          currency: account.currency,
+          balance_check: balanceCheck,
+          message:
+            "Nothing was imported because reconciliation failed. Correct the transaction signs/opening balance, or retry with allow_balance_mismatch=true only if the difference is understood.",
+        };
       }
 
       const balance = withBalance(db.prepare("SELECT * FROM accounts WHERE id = ?").get(account.id) as unknown as Account);
@@ -442,11 +474,7 @@ const TOOLS: AnyTool[] = [
       if (a.is_transfer) {
         db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
       } else {
-        // unmarking dissolves any pairing — on both sides, so no dangling peer pointer
-        tx(() => {
-          db.prepare("UPDATE transactions SET is_transfer = 0, transfer_peer_id = NULL WHERE id = ?").run(id);
-          db.prepare("UPDATE transactions SET transfer_peer_id = NULL WHERE transfer_peer_id = ?").run(id);
-        });
+        unmarkTransfer(id);
       }
       return { updated: true };
     },
@@ -459,13 +487,20 @@ const TOOLS: AnyTool[] = [
     input: z.strictObject({
       transaction_id_a: z.number().int(),
       transaction_id_b: z.number().int(),
+      allow_mismatch: z
+        .boolean()
+        .default(false)
+        .describe("Explicitly allow different currencies or non-opposite amounts, e.g. an FX transfer or fee-adjusted transfer"),
     }),
     handler(args) {
-      const { a, b } = pairTransfer(args.transaction_id_a, args.transaction_id_b);
-      const warning =
-        a.amount_cents + b.amount_cents !== 0
-          ? "amounts are not exact opposites — double-check these are really two sides of one transfer"
-          : undefined;
+      const { a, b, mismatch } = pairTransfer(
+        args.transaction_id_a,
+        args.transaction_id_b,
+        args.allow_mismatch
+      );
+      const warning = mismatch
+        ? "paired with an explicit mismatch override — verify the FX conversion or fees"
+        : undefined;
       return { paired: true, a, b, ...(warning ? { warning } : {}) };
     },
   }),
@@ -480,6 +515,7 @@ const TOOLS: AnyTool[] = [
     handler(a) {
       const month = a.month ?? currentLocalMonth();
       const nw = netWorth();
+      const missingFx = missingFxCurrenciesForRange(month, month);
       // CAD-converted per account — same math as the web dashboard
       const spendRows = monthlySpendingByCategory(month).map((s) => ({
         category: s.category_name,
@@ -496,6 +532,8 @@ const TOOLS: AnyTool[] = [
         net_worth_cad_cents: nw.total_cad_cents,
         assets_cad_cents: nw.assets_cad_cents,
         liabilities_cad_cents: nw.liabilities_cad_cents,
+        fx_complete: nw.fx_complete && missingFx.length === 0,
+        missing_fx_currencies: [...new Set([...nw.missing_fx_currencies, ...missingFx])].sort(),
         accounts: nw.accounts.map((a) => ({ name: a.name, currency: a.currency, balance_cents: a.balance_cents, balance_cad_cents: a.balance_cad_cents })),
         spending_by_category: spendRows,
         uncategorized_count: uncategorized,

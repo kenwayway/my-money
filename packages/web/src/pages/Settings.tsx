@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Trash2, Undo2, Plus } from "lucide-react";
+import { Trash2, Undo2, Plus, Download } from "lucide-react";
 import { api, fmtMoney, type Category } from "../api";
 import { catEmoji } from "../categoryIcons";
 
@@ -52,6 +52,16 @@ export default function Settings() {
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start" }}>
+        <div className="card" style={{ gridColumn: "1 / -1" }}>
+          <h2>Backup</h2>
+          <p className="dim">
+            Download a consistent, standalone copy of the database. This remains safe while the app and MCP server are running.
+          </p>
+          <button className="primary" onClick={() => { window.location.href = "/api/settings/backup"; }}>
+            <Download size={14} style={{ verticalAlign: -2 }} /> Download backup
+          </button>
+        </div>
+
         <div className="card">
           <h2>MCP server（AI 助手接入）</h2>
           <p className="dim">
