@@ -1,5 +1,19 @@
 import { useEffect, useState } from "react";
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Treemap } from "recharts";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Treemap,
+} from "recharts";
 import { X } from "lucide-react";
 import {
   api,
@@ -19,6 +33,7 @@ interface TipEntry {
   value?: number | string;
   color?: string;
   fill?: string;
+  stroke?: string;
   payload?: { color?: string; fill?: string };
 }
 
@@ -29,7 +44,7 @@ function ChartTip({ active, payload, label }: { active?: boolean; payload?: TipE
       {label != null && <div className="chart-tip-title">{label}</div>}
       {payload.map((p) => (
         <div className="chart-tip-row" key={String(p.dataKey ?? p.name)}>
-          <i style={{ background: p.fill ?? p.color ?? p.payload?.color ?? p.payload?.fill }} />
+          <i style={{ background: p.stroke ?? p.fill ?? p.color ?? p.payload?.color ?? p.payload?.fill }} />
           <span className="dim">{p.name}</span>
           <span className="money">${Number(p.value).toLocaleString("en-CA", { minimumFractionDigits: 2 })}</span>
         </div>
@@ -80,6 +95,18 @@ function donutLabel({ cx = 0, cy = 0, midAngle = 0, outerRadius = 0, percent = 0
 
 type CatSpend = SpendingSummary["by_category"][number];
 type TransferSuggestion = FinancialInboxSummary["transfer_suggestions"][number];
+type TrendMode = "total" | "category";
+
+interface CategoryTrendLine {
+  key: string;
+  name: string;
+  color: string;
+  total_cad_cents: number;
+}
+
+function categoryTrendKey(categoryId: number | null): string {
+  return categoryId === null ? "category_uncategorized" : `category_${categoryId}`;
+}
 
 export default function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }) {
   const [netWorth, setNetWorth] = useState<NetWorthSummary | null>(null);
@@ -93,10 +120,27 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
   const [chartMode, setChartMode] = useState<"donut" | "treemap">(() =>
     localStorage.getItem("spend-chart") === "treemap" ? "treemap" : "donut"
   );
+  const [trendMode, setTrendModeState] = useState<TrendMode>(() =>
+    localStorage.getItem("trend-chart") === "category" ? "category" : "total"
+  );
+  const [hiddenTrendKeys, setHiddenTrendKeys] = useState<Set<string>>(() => new Set());
 
   const setMode = (m: "donut" | "treemap") => {
     setChartMode(m);
     localStorage.setItem("spend-chart", m);
+  };
+  const setTrendMode = (m: TrendMode) => {
+    setTrendModeState(m);
+    localStorage.setItem("trend-chart", m);
+  };
+  const toggleTrendLine = (key: string) => {
+    if (drill && key === categoryTrendKey(drill.category_id)) return;
+    setHiddenTrendKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   };
 
   useEffect(() => {
@@ -123,16 +167,35 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     p.set("limit", "500");
     api
       .get<{ rows: TxnRow[] }>(`/transactions?${p}`)
-      .then((r) => setDrillRows(r.rows.filter((t) => !t.is_transfer))) // match the donut's scope
+      .then((r) =>
+        setDrillRows(
+          r.rows.filter((t) => !t.is_transfer && !(t.amount_cents > 0 && t.refund_peer_id !== null))
+        )
+      ) // match the donut's scope
       .catch(console.error);
   }, [drill, month]);
 
   const changeMonth = (m: string) => {
     setMonth(m);
     setDrill(null);
+    setHiddenTrendKeys(new Set());
   };
 
-  const toggleDrill = (c: CatSpend) => setDrill(drill?.category_id === c.category_id ? null : c);
+  const toggleDrill = (c: CatSpend) => {
+    if (drill?.category_id === c.category_id) {
+      setDrill(null);
+      return;
+    }
+    setDrill(c);
+    setTrendMode("category");
+    const selectedKey = categoryTrendKey(c.category_id);
+    setHiddenTrendKeys((current) => {
+      if (!current.has(selectedKey)) return current;
+      const next = new Set(current);
+      next.delete(selectedKey);
+      return next;
+    });
+  };
 
   const openInTransactions = () => {
     if (!drill) return;
@@ -192,6 +255,59 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     Spending: t.expense_cad_cents / 100,
     Income: t.income_cad_cents / 100,
   }));
+  const categoryTrendTotals = new Map<string, CategoryTrendLine>();
+  for (const entry of spending?.category_trend ?? []) {
+    const key = categoryTrendKey(entry.category_id);
+    const existing = categoryTrendTotals.get(key);
+    if (existing) {
+      existing.total_cad_cents += entry.total_cad_cents;
+    } else {
+      categoryTrendTotals.set(key, {
+        key,
+        name: entry.category_name,
+        color: entry.category_color,
+        total_cad_cents: entry.total_cad_cents,
+      });
+    }
+  }
+  const allTrendCategories = [...categoryTrendTotals.values()].sort(
+    (a, b) => b.total_cad_cents - a.total_cad_cents
+  );
+  const selectedTrendKey = drill ? categoryTrendKey(drill.category_id) : null;
+  const selectedTrendCategory = selectedTrendKey ? categoryTrendTotals.get(selectedTrendKey) : undefined;
+  const defaultTopTrendCategories = allTrendCategories.slice(0, 5);
+  const topTrendCategories =
+    selectedTrendCategory && !defaultTopTrendCategories.some((category) => category.key === selectedTrendKey)
+      ? [...defaultTopTrendCategories.slice(0, 4), selectedTrendCategory]
+      : defaultTopTrendCategories;
+  const topTrendKeys = new Set(topTrendCategories.map((category) => category.key));
+  const otherTrendCategories = allTrendCategories.filter((category) => !topTrendKeys.has(category.key));
+  const trendLines: CategoryTrendLine[] = [
+    ...topTrendCategories,
+    ...(otherTrendCategories.length > 0
+      ? [
+          {
+            key: "category_other",
+            name: "Other",
+            color: "var(--text-faint)",
+            total_cad_cents: otherTrendCategories.reduce((sum, category) => sum + category.total_cad_cents, 0),
+          },
+        ]
+      : []),
+  ];
+  const categoryTrendData = (spending?.trend ?? []).map((monthEntry) => {
+    const row: Record<string, string | number> = {
+      month: new Date(`${monthEntry.month}-01T00:00:00`).toLocaleString("en", { month: "short" }),
+    };
+    for (const line of trendLines) row[line.key] = 0;
+    for (const entry of spending?.category_trend ?? []) {
+      if (entry.month !== monthEntry.month) continue;
+      const key = categoryTrendKey(entry.category_id);
+      const dataKey = topTrendKeys.has(key) ? key : "category_other";
+      row[dataKey] = Number(row[dataKey] ?? 0) + entry.total_cad_cents / 100;
+    }
+    return row;
+  });
 
   return (
     <>
@@ -348,7 +464,25 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
         <div className="card">
           <div className="chart-head">
             <h2>6-month trend (CAD)</h2>
-            <div className="chart-legend">
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                className={trendMode === "total" ? "primary" : ""}
+                style={{ padding: "3px 9px", fontSize: 12 }}
+                onClick={() => setTrendMode("total")}
+              >
+                Total
+              </button>
+              <button
+                className={trendMode === "category" ? "primary" : ""}
+                style={{ padding: "3px 9px", fontSize: 12 }}
+                onClick={() => setTrendMode("category")}
+              >
+                By category
+              </button>
+            </div>
+          </div>
+          {trendMode === "total" ? (
+            <div className="chart-legend trend-chart-legend">
               <span>
                 <i style={{ background: "var(--chart-income)" }} /> Income
               </span>
@@ -356,25 +490,87 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
                 <i style={{ background: "var(--chart-expense)" }} /> Spending
               </span>
             </div>
-          </div>
-          <div style={{ height: 340, marginTop: 14 }}>
-            <ResponsiveContainer>
-              <BarChart data={trendData} barGap={2} barCategoryGap="28%" margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
-                <CartesianGrid vertical={false} stroke="var(--border)" />
-                <XAxis dataKey="month" tick={{ fill: "var(--text-faint)", fontSize: 11.5 }} tickLine={false} axisLine={{ stroke: "var(--border-strong)" }} tickMargin={8} />
-                <YAxis
-                  tick={{ fill: "var(--text-faint)", fontSize: 11.5, fontFamily: "var(--font-mono)" }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={44}
-                  tickFormatter={(v: number) => (v >= 1000 ? `$${v % 1000 === 0 ? v / 1000 : (v / 1000).toFixed(1)}k` : `$${v}`)}
-                />
-                <Tooltip cursor={{ fill: "var(--bg-hover)", opacity: 0.6 }} content={<ChartTip />} />
-                <Bar dataKey="Income" fill="var(--chart-income)" radius={[4, 4, 0, 0]} maxBarSize={18} />
-                <Bar dataKey="Spending" fill="var(--chart-expense)" radius={[4, 4, 0, 0]} maxBarSize={18} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          ) : (
+            <div className="trend-category-legend" aria-label="Category trend legend">
+              {trendLines.map((line) => {
+                const hidden = hiddenTrendKeys.has(line.key);
+                const selected = line.key === selectedTrendKey;
+                return (
+                  <button
+                    type="button"
+                    key={line.key}
+                    className={[hidden ? "is-hidden" : "", selected ? "is-selected" : ""].filter(Boolean).join(" ")}
+                    onClick={() => toggleTrendLine(line.key)}
+                    title={selected ? `${line.name} is selected` : `${hidden ? "Show" : "Hide"} ${line.name}`}
+                  >
+                    <i style={{ background: line.color }} />
+                    {line.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {trendMode === "category" && trendLines.length === 0 ? (
+            <div className="empty-state">No category spending in this period</div>
+          ) : (
+            <div style={{ height: 340, marginTop: 14 }}>
+              <ResponsiveContainer>
+                {trendMode === "total" ? (
+                  <BarChart data={trendData} barGap={2} barCategoryGap="28%" margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+                    <CartesianGrid vertical={false} stroke="var(--border)" />
+                    <XAxis dataKey="month" tick={{ fill: "var(--text-faint)", fontSize: 11.5 }} tickLine={false} axisLine={{ stroke: "var(--border-strong)" }} tickMargin={8} />
+                    <YAxis
+                      tick={{ fill: "var(--text-faint)", fontSize: 11.5, fontFamily: "var(--font-mono)" }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={44}
+                      tickFormatter={(v: number) => (v >= 1000 ? `$${v % 1000 === 0 ? v / 1000 : (v / 1000).toFixed(1)}k` : `$${v}`)}
+                    />
+                    <Tooltip cursor={{ fill: "var(--bg-hover)", opacity: 0.6 }} content={<ChartTip />} />
+                    <Bar dataKey="Income" fill="var(--chart-income)" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    <Bar dataKey="Spending" fill="var(--chart-expense)" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                  </BarChart>
+                ) : (
+                  <LineChart data={categoryTrendData} margin={{ top: 4, right: 8, bottom: 0, left: 4 }}>
+                    <CartesianGrid vertical={false} stroke="var(--border)" />
+                    <XAxis dataKey="month" tick={{ fill: "var(--text-faint)", fontSize: 11.5 }} tickLine={false} axisLine={{ stroke: "var(--border-strong)" }} tickMargin={8} />
+                    <YAxis
+                      tick={{ fill: "var(--text-faint)", fontSize: 11.5, fontFamily: "var(--font-mono)" }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={44}
+                      tickFormatter={(v: number) => (v >= 1000 ? `$${v % 1000 === 0 ? v / 1000 : (v / 1000).toFixed(1)}k` : `$${v}`)}
+                    />
+                    <Tooltip cursor={{ stroke: "var(--border-strong)" }} content={<ChartTip />} />
+                    {trendLines
+                      .filter((line) => !hiddenTrendKeys.has(line.key))
+                      .sort(
+                        (a, b) =>
+                          Number(a.key === selectedTrendKey) - Number(b.key === selectedTrendKey)
+                      )
+                      .map((line) => (
+                        <Line
+                          key={line.key}
+                          type="monotone"
+                          dataKey={line.key}
+                          name={line.name}
+                          stroke={line.color}
+                          strokeWidth={line.key === selectedTrendKey ? 3.5 : 2}
+                          strokeOpacity={selectedTrendKey && line.key !== selectedTrendKey ? 0.18 : 1}
+                          dot={false}
+                          activeDot={
+                            selectedTrendKey && line.key !== selectedTrendKey
+                              ? false
+                              : { r: line.key === selectedTrendKey ? 5 : 4, strokeWidth: 0 }
+                          }
+                          isAnimationActive={false}
+                        />
+                      ))}
+                  </LineChart>
+                )}
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       </div>
 
@@ -421,7 +617,16 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
                   </td>
                   <td className="dim">{t.account_name}</td>
                   <td className={`money ${t.amount_cents < 0 ? "" : "pos"}`} style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    {fmtMoney(t.amount_cents, t.account_currency, true)}
+                    {fmtMoney(
+                      t.refund_peer_amount_cents !== null ? t.amount_cents + t.refund_peer_amount_cents : t.amount_cents,
+                      t.account_currency,
+                      true
+                    )}
+                    {t.refund_peer_amount_cents !== null && (
+                      <div className="faint" style={{ fontSize: 11 }}>
+                        after {fmtMoney(t.refund_peer_amount_cents, t.account_currency)} refund
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

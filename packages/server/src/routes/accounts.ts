@@ -100,10 +100,17 @@ export const accountsRoute = new Hono()
     const txnCount = (
       db.prepare("SELECT COUNT(*) AS c FROM transactions WHERE account_id = ?").get(id) as { c: number }
     ).c;
-    if (txnCount > 0) {
+    const documentCount = (
+      db.prepare("SELECT COUNT(*) AS c FROM statement_documents WHERE account_id = ?").get(id) as { c: number }
+    ).c;
+    if (txnCount > 0 || documentCount > 0) {
       // safer default: archive instead of destroying history
       db.prepare("UPDATE accounts SET archived = 1 WHERE id = ?").run(id);
-      return c.json({ archived: true, reason: `account has ${txnCount} transactions` });
+      const reasons = [
+        txnCount > 0 ? `${txnCount} transactions` : "",
+        documentCount > 0 ? `${documentCount} statement files` : "",
+      ].filter(Boolean);
+      return c.json({ archived: true, reason: `account has ${reasons.join(" and ")}` });
     }
     db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
     return c.json({ deleted: true });

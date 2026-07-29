@@ -43,10 +43,10 @@ export default function Settings() {
         <div className="card" style={{ gridColumn: "1 / -1" }}>
           <h2>Backup</h2>
           <p className="dim">
-            Download a consistent, standalone copy of the database. This remains safe while the app and MCP server are running.
+            Download a consistent ZIP containing the database, every stored PDF/CSV statement, and restore instructions. This remains safe while the app and MCP server are running.
           </p>
           <button className="primary" onClick={() => { window.location.href = "/api/settings/backup"; }}>
-            <Download size={14} style={{ verticalAlign: -2 }} /> Download backup
+            <Download size={14} style={{ verticalAlign: -2 }} /> Download full backup
           </button>
         </div>
 
@@ -68,8 +68,8 @@ export default function Settings() {
           >{`claude mcp add my-money -- npm run mcp -w packages/server
 # 或项目根目录的 .mcp.json 已配置好，Claude Code 打开本项目即自动可用`}</pre>
           <p className="dim" style={{ marginTop: 8 }}>
-            工具：list_accounts · create_account · import_transactions · list_transactions · set_category · mark_transfer · get_summary ·
-            undo_import · set_fx_rate
+            工具：list_accounts · create_account · import_transactions · list_transactions · set_category · mark_transfer ·
+            link_transfer_pair · link_refund_pair · get_summary · undo_import · set_fx_rate
           </p>
         </div>
 

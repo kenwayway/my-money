@@ -5,7 +5,13 @@ import { categorizeByRules } from "../services/categorizer.js";
 /** Apply learned merchant rules to all uncategorized transactions (local only). */
 export const categorizeRoute = new Hono().post("/run", (c) => {
   const uncategorized = db
-    .prepare("SELECT id, merchant_norm FROM transactions WHERE category_id IS NULL AND is_transfer = 0")
+    .prepare(
+      `SELECT id, merchant_norm
+       FROM transactions
+       WHERE category_id IS NULL
+         AND is_transfer = 0
+         AND NOT (amount_cents > 0 AND refund_peer_id IS NOT NULL)`
+    )
     .all() as { id: number; merchant_norm: string }[];
 
   if (uncategorized.length === 0) return c.json({ updated: 0, remaining: 0 });

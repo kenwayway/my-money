@@ -10,11 +10,13 @@ import type {
 const STATEMENT_SELECT = `
   SELECT i.*, a.name AS account_name, a.currency AS account_currency,
          a.color AS account_color, a.type AS account_type, a.institution,
+         d.id AS document_id, d.original_name AS document_name,
          COALESCE(i.statement_start_date, MIN(t.posted_date)) AS statement_start_date,
          COALESCE(i.statement_end_date, MAX(t.posted_date)) AS statement_end_date,
          COUNT(t.id) AS active_transaction_count
   FROM imports i
   JOIN accounts a ON a.id = i.account_id
+  LEFT JOIN statement_documents d ON d.import_id = i.id
   LEFT JOIN transactions t ON t.import_id = i.id
 `;
 
@@ -93,5 +95,72 @@ export function reconcileStatement(
      WHERE id = ?`
   ).run(endDate, statementBalanceCents, computed, status, id);
 
+  return statementById(id)!;
+}
+
+export function updateStatementPeriod(
+  id: number,
+  startDate: string,
+  endDate: string
+): StatementRecord {
+  if (startDate > endDate) {
+    throw new Error("statement start date cannot be after its end date");
+  }
+  const row = db
+    .prepare(
+      `SELECT i.status AS import_status, i.statement_balance_cents, a.*
+       FROM imports i
+       JOIN accounts a ON a.id = i.account_id
+       WHERE i.id = ?`
+    )
+    .get(id) as unknown as
+    | (Account & {
+        import_status: "committed" | "undone";
+        statement_balance_cents: number | null;
+      })
+    | undefined;
+  if (!row) throw new Error(`statement ${id} not found`);
+
+  const transactionBounds = db
+    .prepare(
+      `SELECT MIN(posted_date) AS first_date, MAX(posted_date) AS last_date
+       FROM transactions WHERE import_id = ?`
+    )
+    .get(id) as { first_date: string | null; last_date: string | null };
+  if (transactionBounds.first_date && startDate > transactionBounds.first_date) {
+    throw new Error(
+      `statement start date cannot be after its earliest transaction (${transactionBounds.first_date})`
+    );
+  }
+  if (transactionBounds.last_date && endDate < transactionBounds.last_date) {
+    throw new Error(
+      `statement end date cannot be before its latest transaction (${transactionBounds.last_date})`
+    );
+  }
+
+  let computedBalance: number | null = null;
+  let reconciliationStatus: "not_checked" | "matched" | "mismatch" =
+    "not_checked";
+  if (
+    row.import_status === "committed" &&
+    row.statement_balance_cents !== null
+  ) {
+    computedBalance = balanceAsOf(row, endDate);
+    reconciliationStatus =
+      computedBalance === row.statement_balance_cents ? "matched" : "mismatch";
+  }
+
+  db.prepare(
+    `UPDATE imports
+     SET statement_start_date = ?, statement_end_date = ?,
+         computed_balance_cents = ?, reconciliation_status = ?
+     WHERE id = ?`
+  ).run(
+    startDate,
+    endDate,
+    computedBalance,
+    reconciliationStatus,
+    id
+  );
   return statementById(id)!;
 }

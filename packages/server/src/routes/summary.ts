@@ -32,9 +32,22 @@ export const summaryRoute = new Hono()
     const trendRows = db
       .prepare(
         `SELECT t.account_id, substr(t.posted_date, 1, 7) AS ym,
-                SUM(CASE WHEN t.amount_cents < 0 THEN -t.amount_cents ELSE 0 END) AS expense,
-                SUM(CASE WHEN t.amount_cents > 0 THEN t.amount_cents ELSE 0 END) AS income
+                SUM(
+                  CASE WHEN t.amount_cents < 0
+                    THEN -t.amount_cents
+                      - CASE WHEN refund.amount_cents > 0 THEN refund.amount_cents ELSE 0 END
+                    ELSE 0
+                  END
+                ) AS expense,
+                SUM(
+                  CASE WHEN t.amount_cents > 0 AND refund.id IS NULL
+                    THEN t.amount_cents
+                    ELSE 0
+                  END
+                ) AS income
          FROM transactions t
+         LEFT JOIN transactions refund
+           ON refund.id = t.refund_peer_id AND refund.refund_peer_id = t.id
          LEFT JOIN categories c ON c.id = t.category_id
          WHERE t.is_transfer = 0 AND (c.name IS NULL OR c.name != 'Transfer')
            AND substr(t.posted_date, 1, 7) >= ? AND substr(t.posted_date, 1, 7) <= ?
@@ -59,9 +72,21 @@ export const summaryRoute = new Hono()
       }
       return { month: ym, expense_cad_cents: expense, income_cad_cents: income };
     });
+    const categoryTrend = months.flatMap((ym) =>
+      monthlySpendingByCategory(ym, rateByAccount).map((category) => ({
+        month: ym,
+        ...category,
+      }))
+    );
 
     const uncategorized = (
-      db.prepare("SELECT COUNT(*) AS n FROM transactions WHERE category_id IS NULL AND is_transfer = 0").get() as {
+      db.prepare(
+        `SELECT COUNT(*) AS n
+         FROM transactions
+         WHERE category_id IS NULL
+           AND is_transfer = 0
+           AND NOT (amount_cents > 0 AND refund_peer_id IS NOT NULL)`
+      ).get() as {
         n: number;
       }
     ).n;
@@ -70,6 +95,7 @@ export const summaryRoute = new Hono()
       month,
       by_category: byCategory,
       trend,
+      category_trend: categoryTrend,
       uncategorized_count: uncategorized,
       fx_complete: missingFx.length === 0,
       missing_fx_currencies: missingFx,

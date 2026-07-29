@@ -9,6 +9,7 @@ interface PairSide {
   description_raw: string;
   amount_cents: number;
   transfer_peer_id: number | null;
+  refund_peer_id: number | null;
 }
 
 /**
@@ -25,7 +26,7 @@ export function pairTransfer(
   if (idA === idB) throw new Error("cannot pair a transaction with itself");
   const get = db.prepare(
     `SELECT t.id, t.account_id, a.currency, t.posted_date, t.description_raw,
-            t.amount_cents, t.transfer_peer_id
+            t.amount_cents, t.transfer_peer_id, t.refund_peer_id
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE t.id = ?`
   );
@@ -34,6 +35,9 @@ export function pairTransfer(
   if (!a) throw new Error(`transaction ${idA} not found`);
   if (!b) throw new Error(`transaction ${idB} not found`);
   if (a.account_id === b.account_id) throw new Error("transfer sides must belong to different accounts");
+  if (a.refund_peer_id !== null || b.refund_peer_id !== null) {
+    throw new Error("a refund pair cannot also be linked as a transfer");
+  }
   const mismatch = a.currency !== b.currency || a.amount_cents + b.amount_cents !== 0;
   if (mismatch && !allowMismatch) {
     throw new Error(

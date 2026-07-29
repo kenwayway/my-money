@@ -46,6 +46,22 @@ CREATE TABLE IF NOT EXISTS imports (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+CREATE TABLE IF NOT EXISTS statement_documents (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER REFERENCES accounts(id),
+  import_id INTEGER UNIQUE REFERENCES imports(id) ON DELETE SET NULL,
+  original_name TEXT NOT NULL,
+  storage_key TEXT NOT NULL UNIQUE,
+  file_sha256 TEXT NOT NULL UNIQUE,
+  size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+  mime_type TEXT NOT NULL CHECK(mime_type IN ('application/pdf','text/csv')),
+  uploaded_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_statement_documents_account
+  ON statement_documents(account_id, uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_statement_documents_import
+  ON statement_documents(import_id);
+
 CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -57,6 +73,7 @@ CREATE TABLE IF NOT EXISTS transactions (
   category_source TEXT CHECK(category_source IN ('rule','ai','user')),
   is_transfer INTEGER NOT NULL DEFAULT 0,
   transfer_peer_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  refund_peer_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
   import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL,
   fingerprint TEXT NOT NULL,
   notes TEXT,

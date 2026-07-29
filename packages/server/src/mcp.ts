@@ -15,7 +15,12 @@
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import crypto from "node:crypto";
 import { z } from "zod";
 import { db, tx, initDb } from "./db/connection.js";
@@ -24,6 +29,7 @@ import { normalizeMerchant, upsertRuleSafe, categorizeByRules } from "./services
 import { dedupeRows } from "./import/dedupe.js";
 import { netWorth, withBalance, balanceAsOf } from "./services/balances.js";
 import { suggestTransferPairs, pairTransfer, unmarkTransfer } from "./services/transfers.js";
+import { pairRefund, unpairRefund, unpairRefundInTransaction } from "./services/refunds.js";
 import {
   currentLocalMonth,
   currentLocalDate,
@@ -32,9 +38,15 @@ import {
 } from "./services/spending.js";
 import {
   defaultAccountColor,
+  isDefaultAccountColor,
   type Account,
   type Category,
 } from "@my-money/shared";
+import {
+  listStatementDocuments,
+  readStatementDocument,
+  statementDocumentById,
+} from "./services/statement-documents.js";
 
 initDb();
 seedDb();
@@ -153,6 +165,115 @@ const TOOLS: AnyTool[] = [
   }),
 
   tool({
+    name: "update_account",
+    description:
+      "Change an existing account: rename it, fix its institution/last4/currency, or correct the opening balance and the date it applies to. Only the fields you pass are changed; pass null to clear institution, last4, or opening_balance_date. IMPORTANT — opening_balance_date is the date the opening balance is 'as of': only transactions dated strictly AFTER it are added on top, so a transaction posted ON that date counts as already included in the opening balance. If an import reconciles short by exactly the amount of a transaction sitting on the opening date, move opening_balance_date one day earlier. The response reports the balance before and after so the effect of the change is visible. Use archived to hide an account without destroying its transaction history.",
+    input: z.strictObject({
+      account: AccountRef,
+      name: z.string().min(1).optional(),
+      institution: z.string().nullable().optional().describe("null clears it"),
+      type: z
+        .enum(["chequing", "savings", "credit", "prepaid", "cash", "investment"])
+        .optional()
+        .describe("changing to or from 'credit' also flips the account between liability and asset"),
+      currency: z.string().length(3).optional().describe("ISO 4217"),
+      last4: z.string().max(4).nullable().optional().describe("null clears it"),
+      opening_balance_cents: z
+        .number()
+        .int()
+        .optional()
+        .describe("signed cents; for a liability, money owed is negative"),
+      opening_balance_date: DateStr.nullable()
+        .optional()
+        .describe(
+          "YYYY-MM-DD. The opening balance is as of the END of this day — only transactions dated after it are added on top. null clears it."
+        ),
+      archived: z.boolean().optional(),
+    }),
+    handler(a) {
+      const account = accountByRef(a.account);
+      if (!account) throw new Error(`account not found: ${a.account}. Call list_accounts first.`);
+
+      const { account: _ref, ...changes } = a;
+      const changed = Object.keys(changes).filter((k) => changes[k as keyof typeof changes] !== undefined);
+      if (changed.length === 0) throw new Error("nothing to update: pass at least one field to change");
+
+      // Account names double as lookup keys (see accountByRef), so keep them unambiguous.
+      if (a.name !== undefined) {
+        const clash = db
+          .prepare("SELECT id FROM accounts WHERE lower(name) = lower(?) AND id <> ? AND archived = 0")
+          .get(a.name, account.id) as { id: number } | undefined;
+        if (clash) throw new Error(`another account is already named "${a.name}" (id ${clash.id})`);
+      }
+
+      const before = withBalance(account);
+      const type = a.type ?? account.type;
+      const next = {
+        name: a.name ?? account.name,
+        institution: a.institution === undefined ? account.institution : a.institution,
+        type,
+        kind: type === "credit" ? "liability" : "asset",
+        currency: a.currency ? a.currency.toUpperCase() : account.currency,
+        last4: a.last4 === undefined ? account.last4 : a.last4,
+        opening_balance_cents: a.opening_balance_cents ?? account.opening_balance_cents,
+        opening_balance_date:
+          a.opening_balance_date === undefined ? account.opening_balance_date : a.opening_balance_date,
+        // Only follow the type's palette if the account never got a custom colour.
+        color:
+          a.type && isDefaultAccountColor(account.color) ? defaultAccountColor(a.type) : account.color,
+        archived: a.archived === undefined ? account.archived : a.archived ? 1 : 0,
+        id: account.id,
+      };
+
+      db.prepare(
+        `UPDATE accounts SET name=@name, institution=@institution, type=@type, kind=@kind, currency=@currency,
+         last4=@last4, opening_balance_cents=@opening_balance_cents, opening_balance_date=@opening_balance_date,
+         color=@color, archived=@archived WHERE id=@id`
+      ).run(next);
+
+      const updated = db.prepare("SELECT * FROM accounts WHERE id = ?").get(account.id) as unknown as Account;
+      const after = withBalance(updated);
+      const warnings: string[] = [];
+      if (a.type && a.type !== account.type && before.txn_count > 0) {
+        warnings.push(
+          `type changed from ${account.type} to ${a.type} on an account with ${before.txn_count} transactions — this flips it between asset and liability, but the stored amount signs are unchanged. Verify the balance still reads correctly.`
+        );
+      }
+      if (next.kind === "liability" && next.opening_balance_cents > 0) {
+        warnings.push("this is a liability account — money owed should normally be a NEGATIVE opening balance");
+      }
+      if (a.currency && a.currency.toUpperCase() !== account.currency && before.txn_count > 0) {
+        warnings.push(
+          `currency changed from ${account.currency} to ${a.currency.toUpperCase()} — existing amounts are NOT converted, they are now read as the new currency.`
+        );
+      }
+
+      return {
+        updated: true,
+        id: account.id,
+        changed_fields: changed,
+        account: {
+          name: updated.name,
+          institution: updated.institution,
+          type: updated.type,
+          kind: updated.kind,
+          currency: updated.currency,
+          last4: updated.last4,
+          opening_balance_cents: updated.opening_balance_cents,
+          opening_balance_date: updated.opening_balance_date,
+          archived: updated.archived,
+        },
+        balance_before_cents: before.balance_cents,
+        balance_after_cents: after.balance_cents,
+        balance_delta_cents: after.balance_cents - before.balance_cents,
+        txn_count_before: before.txn_count,
+        txn_count_after: after.txn_count,
+        ...(warnings.length ? { warnings } : {}),
+      };
+    },
+  }),
+
+  tool({
     name: "list_categories",
     description: "List all spending/income categories. Use these exact names when categorizing transactions.",
     input: z.strictObject({}),
@@ -162,11 +283,41 @@ const TOOLS: AnyTool[] = [
   }),
 
   tool({
+    name: "list_statement_documents",
+    description:
+      "List PDF or CSV statements uploaded to the my-money Statement Inbox. New uploads may have no account assigned: read the file, choose the correct account, then call import_transactions with both that account and statement_document_id. Defaults to files that need processing, including files whose previous import was undone.",
+    input: z.strictObject({
+      status: z.enum(["pending", "all"]).default("pending"),
+    }),
+    handler(a) {
+      return listStatementDocuments(a.status).map((document) => ({
+        id: document.id,
+        account_id: document.account_id,
+        account: document.account_name,
+        original_name: document.original_name,
+        size_bytes: document.size_bytes,
+        uploaded_at: document.uploaded_at,
+        processing_status: document.processing_status,
+        import_id: document.import_id,
+        resource_uri: document.resource_uri,
+      }));
+    },
+  }),
+
+  tool({
     name: "import_transactions",
     description:
       "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; use 'Transfer' for e-transfers between the user's own accounts and credit-card payments). Categories you provide are remembered as merchant rules for future imports; where the user has previously corrected a merchant's category, that user rule takes precedence over your suggestion. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is reconciled before commit and rolls back by default if the balance does not match. Successful imports return an import_id that can undo the whole batch.",
     input: z.strictObject({
       account: AccountRef,
+      statement_document_id: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "ID from list_statement_documents. When supplied, the successful import is linked to that stored PDF/CSV, assigned to the chosen account, and uses its original file name and SHA-256."
+        ),
       source_label: z.string().optional().describe("e.g. the statement file name, for the import history"),
       statement_end_balance_cents: z
         .number()
@@ -175,8 +326,11 @@ const TOOLS: AnyTool[] = [
         .describe(
           "Optional but RECOMMENDED when the statement shows a closing/new balance: signed cents in the account's native currency, in the app's convention — positive = money available (chequing/savings), NEGATIVE = money owed on a credit card (statement 'new balance $523.10' owed → -52310). After importing, the computed balance as of the statement end date is compared against this; a mismatch deterministically catches sign-convention or parsing mistakes."
         ),
+      statement_start_date: DateStr.optional().describe(
+        "YYYY-MM-DD printed statement period start. Supply this when present, especially for statement cycles that cross calendar months. Defaults to the earliest imported transaction date."
+      ),
       statement_end_date: DateStr.optional().describe(
-        "YYYY-MM-DD the closing balance refers to (the statement period end). Defaults to the latest transaction date in this import."
+        "YYYY-MM-DD printed statement period end and the date the closing balance refers to. Defaults to the latest imported transaction date."
       ),
       allow_balance_mismatch: z
         .boolean()
@@ -198,6 +352,27 @@ const TOOLS: AnyTool[] = [
     handler(a) {
       const account = accountByRef(a.account);
       if (!account) throw new Error(`account not found: ${a.account}. Call list_accounts first.`);
+      const statementDocument =
+        a.statement_document_id === undefined
+          ? null
+          : statementDocumentById(a.statement_document_id);
+      if (a.statement_document_id !== undefined && !statementDocument) {
+        throw new Error(`statement document ${a.statement_document_id} not found`);
+      }
+      if (
+        statementDocument &&
+        statementDocument.account_id !== null &&
+        statementDocument.account_id !== account.id
+      ) {
+        throw new Error(
+          `statement document ${statementDocument.id} belongs to ${statementDocument.account_name}, not ${account.name}`
+        );
+      }
+      if (statementDocument?.import_status === "committed") {
+        throw new Error(
+          `statement document ${statementDocument.id} is already linked to committed import ${statementDocument.import_id}`
+        );
+      }
       const txns = a.transactions;
 
       const cats = categoriesByName();
@@ -217,14 +392,32 @@ const TOOLS: AnyTool[] = [
 
       // categories: user rule > explicit from AI > learned AI rule
       const ruleResults = categorizeByRules(toInsert.map((r) => r.merchant_norm));
-      const payloadSha = crypto.createHash("sha256").update(JSON.stringify(txns)).digest("hex");
-      const statementStartDate = rows.reduce(
+      const payloadSha =
+        statementDocument?.file_sha256 ??
+        crypto.createHash("sha256").update(JSON.stringify(txns)).digest("hex");
+      const firstTransactionDate = rows.reduce(
         (min, r) => (r.posted_date < min ? r.posted_date : min),
         rows[0]!.posted_date
       );
-      const statementEndDate =
-        a.statement_end_date ??
-        rows.reduce((max, r) => (r.posted_date > max ? r.posted_date : max), rows[0]!.posted_date);
+      const lastTransactionDate = rows.reduce(
+        (max, r) => (r.posted_date > max ? r.posted_date : max),
+        rows[0]!.posted_date
+      );
+      const statementStartDate = a.statement_start_date ?? firstTransactionDate;
+      const statementEndDate = a.statement_end_date ?? lastTransactionDate;
+      if (statementStartDate > statementEndDate) {
+        throw new Error("statement_start_date cannot be after statement_end_date");
+      }
+      if (statementStartDate > firstTransactionDate) {
+        throw new Error(
+          `statement_start_date ${statementStartDate} is after the earliest transaction ${firstTransactionDate}`
+        );
+      }
+      if (statementEndDate < lastTransactionDate) {
+        throw new Error(
+          `statement_end_date ${statementEndDate} is before the latest transaction ${lastTransactionDate}`
+        );
+      }
 
       let balanceCheck: Record<string, unknown> | undefined;
       const reconciliationRejected = Symbol("reconciliation-rejected");
@@ -242,7 +435,7 @@ const TOOLS: AnyTool[] = [
             )
             .run(
               account.id,
-              a.source_label ?? "mcp-import",
+              statementDocument?.original_name ?? a.source_label ?? "mcp-import",
               payloadSha,
               deduped.length,
               toInsert.length,
@@ -342,7 +535,34 @@ const TOOLS: AnyTool[] = [
              WHERE id = ?`
           ).run(computedBalance, reconciliationStatus, importId);
 
-          return { import_id: importId, inserted, skipped_duplicates: deduped.length - inserted };
+          if (statementDocument) {
+            const current = statementDocumentById(statementDocument.id);
+            if (!current) throw new Error(`statement document ${statementDocument.id} no longer exists`);
+            if (current.import_status === "committed") {
+              throw new Error(
+                `statement document ${statementDocument.id} is already linked to committed import ${current.import_id}`
+              );
+            }
+            if (current.account_id !== null && current.account_id !== account.id) {
+              throw new Error(
+                `statement document ${statementDocument.id} belongs to ${current.account_name}, not ${account.name}`
+              );
+            }
+            db.prepare(
+              "UPDATE statement_documents SET import_id = ?, account_id = ? WHERE id = ?"
+            ).run(
+              importId,
+              account.id,
+              statementDocument.id
+            );
+          }
+
+          return {
+            import_id: importId,
+            inserted,
+            skipped_duplicates: deduped.length - inserted,
+            ...(statementDocument ? { statement_document_id: statementDocument.id } : {}),
+          };
         });
       } catch (err) {
         if (err !== reconciliationRejected) throw err;
@@ -401,14 +621,17 @@ const TOOLS: AnyTool[] = [
         cond.push("lower(c.name) = lower(@category)");
         params.category = a.category;
       }
-      if (a.uncategorized_only) cond.push("t.category_id IS NULL");
+      if (a.uncategorized_only) {
+        cond.push("t.category_id IS NULL AND NOT (t.amount_cents > 0 AND t.refund_peer_id IS NOT NULL)");
+      }
       if (a.search) {
         cond.push("(t.description_raw LIKE @search OR t.merchant_norm LIKE @search OR t.notes LIKE @search)");
         params.search = `%${a.search}%`;
       }
       const where = cond.length ? `WHERE ${cond.join(" AND ")}` : "";
       const stmt = db.prepare(
-        `SELECT t.id, t.posted_date, t.description_raw, t.amount_cents, t.is_transfer, t.notes,
+        `SELECT t.id, t.posted_date, t.description_raw, t.amount_cents, t.is_transfer,
+                t.transfer_peer_id, t.refund_peer_id, t.notes,
                 a.name AS account, a.currency, c.name AS category
          FROM transactions t
          JOIN accounts a ON a.id = t.account_id
@@ -497,11 +720,43 @@ const TOOLS: AnyTool[] = [
       const exists = db.prepare("SELECT id FROM transactions WHERE id = ?").get(id);
       if (!exists) throw new Error(`transaction ${id} not found`);
       if (a.is_transfer) {
-        db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
+        tx(() => {
+          unpairRefundInTransaction(id);
+          db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
+        });
       } else {
         unmarkTransfer(id);
       }
       return { updated: true };
+    },
+  }),
+
+  tool({
+    name: "link_refund_pair",
+    description:
+      "Link one positive refund or reimbursement to one negative original expense. Partial refunds are allowed. The refund is excluded from income and reduces the original expense in its original month and category.",
+    input: z.strictObject({
+      expense_transaction_id: z.number().int(),
+      refund_transaction_id: z.number().int(),
+    }),
+    handler(args) {
+      const { expense, refund } = pairRefund(
+        args.expense_transaction_id,
+        args.refund_transaction_id
+      );
+      return { paired: true, expense, refund };
+    },
+  }),
+
+  tool({
+    name: "unlink_refund_pair",
+    description: "Remove a refund/reimbursement link from either side of the pair.",
+    input: z.strictObject({
+      transaction_id: z.number().int(),
+    }),
+    handler(args) {
+      unpairRefund(args.transaction_id);
+      return { unpaired: true };
     },
   }),
 
@@ -548,7 +803,13 @@ const TOOLS: AnyTool[] = [
         txn_count: s.txn_count,
       }));
       const uncategorized = (
-        db.prepare("SELECT COUNT(*) AS n FROM transactions WHERE category_id IS NULL AND is_transfer = 0").get() as {
+        db.prepare(
+          `SELECT COUNT(*) AS n
+           FROM transactions
+           WHERE category_id IS NULL
+             AND is_transfer = 0
+             AND NOT (amount_cents > 0 AND refund_peer_id IS NOT NULL)`
+        ).get() as {
           n: number;
         }
       ).n;
@@ -688,7 +949,10 @@ const TOOLS: AnyTool[] = [
 
 // ---------- wire up ----------
 
-const server = new Server({ name: "my-money", version: "0.1.0" }, { capabilities: { tools: {} } });
+const server = new Server(
+  { name: "my-money", version: "0.1.0" },
+  { capabilities: { tools: {}, resources: {} } }
+);
 
 server.setRequestHandler(ListToolsRequestSchema, () => ({
   tools: TOOLS.map((t) => {
@@ -696,6 +960,45 @@ server.setRequestHandler(ListToolsRequestSchema, () => ({
     return { name: t.name, description: t.description, inputSchema: inputSchema as { type: "object" } };
   }),
 }));
+
+server.setRequestHandler(ListResourcesRequestSchema, () => ({
+  resources: listStatementDocuments("pending").map((document) => ({
+    uri: document.resource_uri,
+    name: document.original_name,
+    title: document.account_name
+      ? `${document.account_name} — ${document.original_name}`
+      : document.original_name,
+    description: `Statement file #${document.id}${document.account_name ? ` for ${document.account_name}` : " (account not assigned)"} (${document.processing_status})`,
+    mimeType: document.mime_type,
+    size: document.size_bytes,
+  })),
+}));
+
+server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+  const match = /^statement:\/\/documents\/(\d+)$/.exec(request.params.uri);
+  if (!match) throw new Error(`unknown statement resource: ${request.params.uri}`);
+  const { document, bytes } = readStatementDocument(Number(match[1]));
+  if (document.mime_type === "text/csv") {
+    return {
+      contents: [
+        {
+          uri: document.resource_uri,
+          mimeType: "text/csv",
+          text: bytes.toString("utf8").replace(/^\uFEFF/, ""),
+        },
+      ],
+    };
+  }
+  return {
+    contents: [
+      {
+        uri: document.resource_uri,
+        mimeType: "application/pdf",
+        blob: bytes.toString("base64"),
+      },
+    ],
+  };
+});
 
 server.setRequestHandler(CallToolRequestSchema, (req) => {
   const t = TOOLS.find((x) => x.name === req.params.name);

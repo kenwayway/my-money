@@ -1,18 +1,31 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
+import fs from "node:fs";
+import { Readable } from "node:stream";
+import { stream } from "hono/streaming";
 import { db, tx } from "../db/connection.js";
-import { createDatabaseBackup } from "../db/backup.js";
+import { createFullBackupArchive } from "../db/backup.js";
 import type { MerchantRule } from "@my-money/shared";
 
 export const settingsRoute = new Hono()
-  .get("/backup", (c) => {
-    const backup = createDatabaseBackup();
-    return c.body(backup.bytes, 200, {
-      "Content-Type": "application/vnd.sqlite3",
-      "Content-Disposition": `attachment; filename="${backup.fileName}"`,
-      "Content-Length": String(backup.bytes.byteLength),
-      "Cache-Control": "no-store",
+  .get("/backup", async (c) => {
+    const backup = await createFullBackupArchive();
+    c.header("Content-Type", "application/zip");
+    c.header("Content-Disposition", `attachment; filename="${backup.fileName}"`);
+    c.header("Content-Length", String(backup.sizeBytes));
+    c.header("Cache-Control", "no-store");
+    return stream(c, async (output) => {
+      try {
+        await output.pipe(
+          Readable.toWeb(fs.createReadStream(backup.filePath)) as ReadableStream
+        );
+      } finally {
+        backup.cleanup();
+      }
+    }, async (_error, output) => {
+      backup.cleanup();
+      await output.close();
     });
   })
   .get("/", (c) => {

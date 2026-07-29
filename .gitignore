@@ -1,6 +1,8 @@
 node_modules/
 dist/
 data/
+# scratch space for rendered statement pages — contains real financial data
+tmp/
 *.log
 .env
 .claude/settings.local.json

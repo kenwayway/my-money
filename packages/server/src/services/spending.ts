@@ -29,6 +29,7 @@ export function missingFxCurrenciesForRange(fromMonth: string, toMonth: string):
        WHERE a.currency != 'CAD'
          AND f.currency IS NULL
          AND t.is_transfer = 0
+         AND NOT (t.amount_cents > 0 AND t.refund_peer_id IS NOT NULL)
          AND substr(t.posted_date, 1, 7) BETWEEN ? AND ?
        ORDER BY a.currency`
     )
@@ -48,10 +49,22 @@ export function monthlySpendingByCategory(
   const spendRows = db
     .prepare(
       `SELECT t.account_id, t.category_id, c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
-              c.type AS category_type, SUM(t.amount_cents) AS total_cents, COUNT(*) AS n
+              c.type AS category_type,
+              SUM(
+                t.amount_cents
+                + CASE
+                    WHEN t.amount_cents < 0 AND refund.amount_cents > 0
+                    THEN refund.amount_cents
+                    ELSE 0
+                  END
+              ) AS total_cents,
+              COUNT(*) AS n
        FROM transactions t
+       LEFT JOIN transactions refund
+         ON refund.id = t.refund_peer_id AND refund.refund_peer_id = t.id
        LEFT JOIN categories c ON c.id = t.category_id
        WHERE t.is_transfer = 0
+         AND NOT (t.amount_cents > 0 AND refund.id IS NOT NULL)
          AND substr(t.posted_date, 1, 7) = ?
          AND (c.name IS NULL OR c.name != 'Transfer')
        GROUP BY t.account_id, t.category_id`

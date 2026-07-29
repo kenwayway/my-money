@@ -70,6 +70,7 @@ export interface Transaction {
   category_source: CategorySource | null;
   is_transfer: 0 | 1;
   transfer_peer_id: number | null;
+  refund_peer_id: number | null;
   import_id: number | null;
   fingerprint: string;
   notes: string | null;
@@ -96,6 +97,25 @@ export interface ImportRecord {
   created_at: number;
 }
 
+export type StatementDocumentStatus = "pending" | "processed" | "undone";
+
+export interface StatementDocument {
+  id: number;
+  account_id: number | null;
+  account_name: string | null;
+  account_currency: string | null;
+  account_color: string | null;
+  import_id: number | null;
+  import_status: "committed" | "undone" | null;
+  original_name: string;
+  file_sha256: string;
+  size_bytes: number;
+  mime_type: "application/pdf" | "text/csv";
+  uploaded_at: number;
+  processing_status: StatementDocumentStatus;
+  resource_uri: string;
+}
+
 export interface StatementRecord extends ImportRecord {
   account_name: string;
   account_currency: string;
@@ -104,6 +124,8 @@ export interface StatementRecord extends ImportRecord {
   institution: string | null;
   active_transaction_count: number;
   difference_cents: number | null;
+  document_id: number | null;
+  document_name: string | null;
 }
 
 export interface StatementTransaction {
@@ -161,10 +183,15 @@ export interface MonthSpend {
   income_cad_cents: number;
 }
 
+export interface CategoryMonthSpend extends CategorySpend {
+  month: string; // YYYY-MM
+}
+
 export interface SpendingSummary {
   month: string;
   by_category: CategorySpend[];
   trend: MonthSpend[];
+  category_trend: CategoryMonthSpend[];
   uncategorized_count: number;
   fx_complete: boolean;
   missing_fx_currencies: string[];

@@ -1,21 +1,33 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
 import {
+  monthDateBounds,
+  statementCycleCoverage,
+  type StatementDateRange,
+} from "@my-money/shared";
+import {
   AlertTriangle,
+  CalendarRange,
   CalendarX2,
   CheckCircle2,
   ChevronRight,
+  Copy,
+  Download,
   FileCheck2,
   Files,
-  HelpCircle,
+  FileUp,
+  FolderOpen,
   RotateCcw,
   ShieldCheck,
+  Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import {
   api,
   fmtMoney,
   type AccountWithBalance,
+  type StatementDocument,
   type StatementDetail,
   type StatementRecord,
 } from "../api";
@@ -78,34 +90,63 @@ function statementMonth(statement: StatementRecord) {
   return (statement.statement_end_date ?? statement.statement_start_date)?.slice(0, 7) ?? null;
 }
 
+function statementRange(
+  statement: StatementRecord
+): StatementDateRange | null {
+  const start = statement.statement_start_date ?? statement.statement_end_date;
+  const end = statement.statement_end_date ?? statement.statement_start_date;
+  if (!start || !end) return null;
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+
+interface CoverageCell {
+  statements: StatementRecord[];
+  coveredDays: number;
+  totalDays: number;
+  status: "partial" | "full";
+  hasPrimaryStatement: boolean;
+}
+
 interface CoverageAccount {
   account: AccountWithBalance;
   startMonth: string;
   statements: StatementRecord[];
-  byMonth: Map<string, StatementRecord>;
+  cells: Map<string, CoverageCell>;
   missingMonths: string[];
+  partialMonths: string[];
   expectedCount: number;
   importedCount: number;
 }
 
 export default function Statements() {
   const [statements, setStatements] = useState<StatementRecord[]>([]);
+  const [documents, setDocuments] = useState<StatementDocument[]>([]);
   const [accounts, setAccounts] = useState<AccountWithBalance[]>([]);
   const [detail, setDetail] = useState<StatementDetail | null>(null);
   const [reconciling, setReconciling] = useState<StatementRecord | null>(null);
+  const [editingPeriod, setEditingPeriod] = useState<StatementRecord | null>(null);
   const [showUndone, setShowUndone] = useState(false);
   const [endDate, setEndDate] = useState("");
+  const [periodStartDate, setPeriodStartDate] = useState("");
+  const [periodEndDate, setPeriodEndDate] = useState("");
   const [closingBalance, setClosingBalance] = useState("");
+  const [showUpload, setShowUpload] = useState(false);
+  const [attachStatement, setAttachStatement] = useState<StatementRecord | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const load = async () => {
     try {
-      const [nextStatements, nextAccounts] = await Promise.all([
+      const [nextStatements, nextDocuments, nextAccounts] = await Promise.all([
         api.get<StatementRecord[]>("/statements"),
+        api.get<StatementDocument[]>("/statement-documents"),
         api.get<AccountWithBalance[]>("/accounts"),
       ]);
       setStatements(nextStatements);
+      setDocuments(nextDocuments);
       setAccounts(nextAccounts);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -114,7 +155,84 @@ export default function Statements() {
 
   useEffect(() => {
     load();
+    const refresh = () => load();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, []);
+
+  const upload = async () => {
+    if (!uploadFile) return;
+    setBusy(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.set("file", uploadFile);
+      if (attachStatement) form.set("import_id", String(attachStatement.id));
+      await api.postForm<StatementDocument>("/statement-documents", form);
+      const attachedImportId = attachStatement?.id;
+      setShowUpload(false);
+      setAttachStatement(null);
+      setUploadFile(null);
+      await load();
+      if (attachedImportId) {
+        setDetail(await api.get<StatementDetail>(`/statements/${attachedImportId}`));
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteDocument = async (
+    document: Pick<StatementDocument, "id" | "original_name">
+  ) => {
+    if (!confirm(`Delete the stored original "${document.original_name}"? Imported transactions will be kept.`)) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await api.del(`/statement-documents/${document.id}`);
+      if (detail?.statement.document_id === document.id) setDetail(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyPrompt = async (document: StatementDocument) => {
+    const prompt =
+      `Use the my-money MCP server to read and import pending statement document #${document.id} ` +
+      `("${document.original_name}"). ` +
+      (document.account_name
+        ? `Import it into account "${document.account_name}". `
+        : "Choose the correct account after reading the statement. ") +
+      "Preserve the exact printed statement start/end dates, reconcile against the closing balance, and report any mismatch.";
+    try {
+      await navigator.clipboard.writeText(prompt);
+      setCopiedId(document.id);
+      window.setTimeout(() => setCopiedId((id) => (id === document.id ? null : id)), 1800);
+    } catch {
+      setError("Could not copy the prompt. Your browser may have blocked clipboard access.");
+    }
+  };
+
+  const openUpload = () => {
+    setError("");
+    setAttachStatement(null);
+    setUploadFile(null);
+    setShowUpload(true);
+  };
+
+  const openAttachmentUpload = (statement: StatementRecord) => {
+    setError("");
+    setAttachStatement(statement);
+    setUploadFile(null);
+    setShowUpload(true);
+  };
 
   const active = useMemo(
     () => statements.filter((statement) => statement.status === "committed"),
@@ -139,15 +257,13 @@ export default function Statements() {
       .filter((account) => account.type !== "investment" && account.type !== "cash")
       .map((account) => {
         const rows = byAccount.get(account.id) ?? [];
-        const byMonth = new Map<string, StatementRecord>();
-        for (const statement of rows) {
-          const month = statementMonth(statement);
-          if (!month) continue;
-          const existing = byMonth.get(month);
-          if (!existing || statement.created_at > existing.created_at) byMonth.set(month, statement);
-        }
-
-        const statementMonths = [...byMonth.keys()].sort();
+        const ranges = rows.flatMap((statement) => {
+          const range = statementRange(statement);
+          return range ? [{ statement, range }] : [];
+        });
+        const statementMonths = ranges
+          .flatMap(({ range }) => [range.start.slice(0, 7), range.end.slice(0, 7)])
+          .sort();
         const createdMonth = monthKeyFromDate(new Date(account.created_at * 1000));
         const startCandidates = [
           account.opening_balance_date?.slice(0, 7),
@@ -156,21 +272,46 @@ export default function Statements() {
         ].filter((value): value is string => Boolean(value));
         const startMonth = startCandidates.sort()[0] ?? currentMonth;
         const expectedMonths = monthsBetween(startMonth, lastCompletedMonth);
-        const importedCount = expectedMonths.filter((month) => byMonth.has(month)).length;
+        const cells = new Map<string, CoverageCell>();
+        for (const month of monthsBetween(startMonth, currentMonth)) {
+          const bounds = monthDateBounds(month);
+          const overlapping = ranges.filter(
+            ({ range }) => range.start <= bounds.end && range.end >= bounds.start
+          );
+          if (overlapping.length === 0) continue;
+          const result = statementCycleCoverage(
+            month,
+            overlapping.map(({ range }) => range)
+          );
+          if (result.status === "none") continue;
+          cells.set(month, {
+            statements: overlapping
+              .map(({ statement }) => statement)
+              .sort((a, b) => b.created_at - a.created_at || b.id - a.id),
+            coveredDays: result.coveredDays,
+            totalDays: result.totalDays,
+            status: result.status,
+            hasPrimaryStatement: result.hasPrimaryStatement,
+          });
+        }
+        const importedCount = expectedMonths.filter((month) => cells.has(month)).length;
 
         return {
           account,
           startMonth,
           statements: rows,
-          byMonth,
-          missingMonths: expectedMonths.filter((month) => !byMonth.has(month)),
+          cells,
+          missingMonths: expectedMonths.filter((month) => !cells.has(month)),
+          partialMonths: expectedMonths.filter(
+            (month) => cells.get(month)?.status === "partial"
+          ),
           expectedCount: expectedMonths.length,
           importedCount,
         };
       })
       .sort((a, b) => {
-        const attentionA = a.missingMonths.length + a.statements.filter((s) => s.reconciliation_status === "mismatch").length;
-        const attentionB = b.missingMonths.length + b.statements.filter((s) => s.reconciliation_status === "mismatch").length;
+        const attentionA = a.missingMonths.length + a.partialMonths.length + a.statements.filter((s) => s.reconciliation_status === "mismatch").length;
+        const attentionB = b.missingMonths.length + b.partialMonths.length + b.statements.filter((s) => s.reconciliation_status === "mismatch").length;
         return attentionB - attentionA || a.account.name.localeCompare(b.account.name);
       });
   }, [accounts, active, currentMonth, lastCompletedMonth]);
@@ -178,6 +319,7 @@ export default function Statements() {
   const expectedMonths = coverage.reduce((sum, row) => sum + row.expectedCount, 0);
   const importedMonths = coverage.reduce((sum, row) => sum + row.importedCount, 0);
   const missingMonths = expectedMonths - importedMonths;
+  const partialMonths = coverage.reduce((sum, row) => sum + row.partialMonths.length, 0);
   const coveragePercent = expectedMonths === 0 ? 100 : Math.round((importedMonths / expectedMonths) * 100);
   const mismatches = active.filter((statement) => statement.reconciliation_status === "mismatch").length;
   const undoneCount = statements.filter((statement) => statement.status === "undone").length;
@@ -239,6 +381,41 @@ export default function Statements() {
     setError("");
   };
 
+  const openPeriodEditor = (statement: StatementRecord) => {
+    setEditingPeriod(statement);
+    setPeriodStartDate(
+      statement.statement_start_date ??
+        statement.statement_end_date ??
+        format(new Date(), "yyyy-MM-dd")
+    );
+    setPeriodEndDate(
+      statement.statement_end_date ??
+        statement.statement_start_date ??
+        format(new Date(), "yyyy-MM-dd")
+    );
+    setError("");
+  };
+
+  const savePeriod = async () => {
+    if (!editingPeriod) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.patch<StatementRecord>(`/statements/${editingPeriod.id}/period`, {
+        statement_start_date: periodStartDate,
+        statement_end_date: periodEndDate,
+      });
+      const id = editingPeriod.id;
+      setEditingPeriod(null);
+      await load();
+      setDetail(await api.get<StatementDetail>(`/statements/${id}`));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const reconcile = async () => {
     if (!reconciling) return;
     const parsed = Number(closingBalance.replace(/[$, ]/g, ""));
@@ -286,6 +463,9 @@ export default function Statements() {
           <h1>Statement Center</h1>
           <div className="faint">See missing months first. Open a statement only when you need the details.</div>
         </div>
+        <button className="primary" onClick={openUpload}>
+          <Upload size={14} /> Upload PDF or CSV
+        </button>
       </div>
 
       {error && <div className="alert error">{error}</div>}
@@ -297,13 +477,76 @@ export default function Statements() {
         </div>
         <div className="card">
           <span className="statement-stat-icon ok"><ShieldCheck size={17} /></span>
-          <div><strong>{coveragePercent}%</strong><span>{importedMonths} of {expectedMonths} months on file</span></div>
+          <div>
+            <strong>{coveragePercent}%</strong>
+            <span>
+              {importedMonths} of {expectedMonths} months with coverage
+              {partialMonths > 0 ? ` · ${partialMonths} partial` : ""}
+            </span>
+          </div>
         </div>
         <div className={`card ${mismatches > 0 ? "attention" : ""}`}>
           <span className="statement-stat-icon danger"><AlertTriangle size={17} /></span>
           <div><strong>{mismatches}</strong><span>Balance issues</span></div>
         </div>
       </div>
+
+      <section className="card statement-inbox">
+        <div className="statement-section-head">
+          <div>
+            <h2>Statement inbox</h2>
+            <p>Drop in a PDF or CSV. Your connected AI reads it, chooses the account, and imports it through MCP.</p>
+          </div>
+          <span className={`statement-inbox-count ${documents.length > 0 ? "attention" : ""}`}>
+            {documents.length} pending
+          </span>
+        </div>
+        {documents.length > 0 ? (
+          <div className="statement-document-list">
+            {documents.map((document) => (
+              <div className="statement-document-row" key={document.id}>
+                <span className="statement-document-icon"><Files size={17} /></span>
+                <div className="statement-document-main">
+                  <strong>{document.original_name}</strong>
+                  <span>
+                    {document.account_name ?? "Account will be chosen by AI"} · {(document.size_bytes / 1024).toFixed(0)} KB · uploaded{" "}
+                    {format(new Date(document.uploaded_at * 1000), "MMM d, yyyy")}
+                  </span>
+                </div>
+                <span className={`statement-status ${document.processing_status === "undone" ? "muted" : "neutral"}`}>
+                  {document.processing_status === "undone" ? <RotateCcw size={12} /> : <FileUp size={12} />}
+                  {document.processing_status === "undone" ? "Needs re-import" : "Pending"}
+                </span>
+                <div className="statement-document-actions">
+                  <button
+                    title="View original file"
+                    onClick={() => window.open(`/api/statement-documents/${document.id}/file`, "_blank", "noopener,noreferrer")}
+                  >
+                    <FolderOpen size={13} />
+                  </button>
+                  <button title="Copy AI prompt" onClick={() => copyPrompt(document)}>
+                    {copiedId === document.id ? <CheckCircle2 size={13} /> : <Copy size={13} />}
+                    <span>{copiedId === document.id ? "Copied" : "Copy AI prompt"}</span>
+                  </button>
+                  <button
+                    className="danger-quiet"
+                    title="Delete stored file"
+                    disabled={busy}
+                    onClick={() => deleteDocument(document)}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="statement-inbox-empty">
+            <CheckCircle2 size={16} />
+            No statement files are waiting for AI processing.
+          </div>
+        )}
+      </section>
 
       <section className="card statement-coverage">
         <div className="statement-section-head">
@@ -314,6 +557,7 @@ export default function Statements() {
           <div className="coverage-legend" aria-label="Coverage legend">
             <span><i className="ok">✓</i> Verified</span>
             <span><i className="neutral">•</i> On file</span>
+            <span><i className="partial">◐</i> Partial</span>
             <span><i className="danger">!</i> Balance differs</span>
             <span><i className="missing">—</i> Missing</span>
           </div>
@@ -338,6 +582,8 @@ export default function Statements() {
                     <span>
                       {row.missingMonths.length > 0
                         ? `${row.missingMonths.length} missing: ${row.missingMonths.slice(-3).map((month) => monthLabel(month, true)).join(", ")}${row.missingMonths.length > 3 ? "…" : ""}`
+                        : row.partialMonths.length > 0
+                          ? `${row.partialMonths.length} partial: ${row.partialMonths.slice(-3).map((month) => monthLabel(month, true)).join(", ")}${row.partialMonths.length > 3 ? "…" : ""}`
                         : row.expectedCount === 0
                           ? "Tracking starts this month"
                           : "Up to date"}
@@ -346,18 +592,54 @@ export default function Statements() {
                 </div>
 
                 {visibleMonths.map((month) => {
-                  const statement = row.byMonth.get(month);
-                  if (statement) {
-                    const meta = statusMeta(statement);
+                  const cell = row.cells.get(month);
+                  if (cell) {
+                    const mismatch = cell.statements.some(
+                      (statement) => statement.reconciliation_status === "mismatch"
+                    );
+                    const verified = cell.statements.every(
+                      (statement) => statement.reconciliation_status === "matched"
+                    );
+                    const tone = mismatch
+                      ? "danger"
+                      : cell.status === "partial"
+                        ? "partial"
+                        : verified
+                          ? "ok"
+                          : "neutral";
+                    const label = mismatch
+                      ? "Balance differs"
+                      : cell.status === "partial"
+                        ? `${cell.coveredDays} of ${cell.totalDays} days covered`
+                        : verified
+                          ? "Balance verified"
+                          : "On file";
+                    const glyph = mismatch
+                      ? "!"
+                      : cell.status === "partial"
+                        ? `${cell.coveredDays}d`
+                        : verified
+                          ? "✓"
+                          : "•";
+                    const statement = cell.statements[0]!;
+                    const calendarPart =
+                      cell.coveredDays < cell.totalDays
+                        ? ` · ${cell.coveredDays}/${cell.totalDays} calendar days represented`
+                        : "";
                     return (
                       <button
-                        className={`coverage-cell ${meta.tone}`}
+                        className={`coverage-cell ${tone} ${cell.status === "partial" ? "partial-range" : ""}`}
                         key={month}
-                        title={`${row.account.name} · ${monthLabel(month, true)} · ${meta.label}`}
-                        aria-label={`${row.account.name}, ${monthLabel(month, true)}: ${meta.label}`}
+                        title={`${row.account.name} · ${monthLabel(month, true)} · ${label}${cell.hasPrimaryStatement ? " · statement cycle ends this month" : calendarPart} · ${cell.statements.length} statement${cell.statements.length === 1 ? "" : "s"}`}
+                        aria-label={`${row.account.name}, ${monthLabel(month, true)}: ${label}`}
                         onClick={() => openDetail(statement.id)}
+                        style={
+                          cell.status === "partial"
+                            ? { "--coverage": `${Math.round((cell.coveredDays / cell.totalDays) * 100)}%` } as React.CSSProperties
+                            : undefined
+                        }
                       >
-                        {meta.glyph}
+                        {glyph}
                       </button>
                     );
                   }
@@ -438,7 +720,7 @@ export default function Statements() {
                             <i className="account-color-bar" style={{ background: statement.account_color }} />
                             <div>
                               <strong>{statement.account_name}</strong>
-                              <span>{statement.file_name}</span>
+                              <span>{statement.document_name ?? statement.file_name}</span>
                             </div>
                           </div>
                         </td>
@@ -474,7 +756,7 @@ export default function Statements() {
               <div>
                 <div className="inbox-kicker"><FileCheck2 size={13} /> Statement #{detail.statement.id}</div>
                 <h2>{detail.statement.account_name}</h2>
-                <div className="faint">{periodLabel(detail.statement)} · {detail.statement.file_name}</div>
+                <div className="faint">{periodLabel(detail.statement)} · {detail.statement.document_name ?? detail.statement.file_name}</div>
               </div>
               <button title="Close" onClick={() => setDetail(null)}><X size={14} /></button>
             </div>
@@ -485,13 +767,57 @@ export default function Statements() {
               <div><span>Calculated balance</span><strong>{detail.statement.computed_balance_cents === null ? "Not checked" : fmtMoney(detail.statement.computed_balance_cents, detail.statement.account_currency)}</strong></div>
             </div>
             <div className="statement-detail-actions">
+              <button onClick={() => openPeriodEditor(detail.statement)}>
+                <CalendarRange size={13} /> Edit statement period
+              </button>
+              {detail.statement.document_id !== null && (
+                <>
+                  <button
+                    onClick={() =>
+                      window.open(
+                        `/api/statement-documents/${detail.statement.document_id}/file`,
+                        "_blank",
+                        "noopener,noreferrer"
+                      )
+                    }
+                  >
+                    <FolderOpen size={13} /> View original file
+                  </button>
+                  <button
+                    onClick={() => {
+                      window.location.href = `/api/statement-documents/${detail.statement.document_id}/file?download=1`;
+                    }}
+                  >
+                    <Download size={13} /> Download
+                  </button>
+                  <button
+                    className="danger"
+                    disabled={busy}
+                    onClick={() =>
+                      deleteDocument({
+                        id: detail.statement.document_id!,
+                        original_name: detail.statement.document_name ?? detail.statement.file_name,
+                      })
+                    }
+                  >
+                    <Trash2 size={13} /> Delete original
+                  </button>
+                </>
+              )}
+              {detail.statement.document_id === null && (
+                <button className="primary" onClick={() => openAttachmentUpload(detail.statement)}>
+                  <FileUp size={13} /> Attach original file
+                </button>
+              )}
               {detail.statement.status === "committed" && (
                 <>
                   <button className="primary" onClick={() => openReconcile(detail.statement)}>Check historical balance</button>
                   <button disabled={busy} onClick={() => undo(detail.statement)}>Undo statement</button>
                 </>
               )}
-              <span className="faint">Original bank files are not stored; only their hash and parsed rows remain.</span>
+              {detail.statement.document_id === null && (
+                <span className="faint">No original statement file is stored for this import.</span>
+              )}
             </div>
             <div className="statement-detail-transactions">
               <table className="table">
@@ -508,6 +834,151 @@ export default function Statements() {
                 </tbody>
               </table>
               {detail.transactions.length === 0 && <div className="empty-state">No active transactions remain in this statement.</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingPeriod && (
+        <div className="modal-backdrop" onClick={() => !busy && setEditingPeriod(null)}>
+          <div className="modal" onClick={(event) => event.stopPropagation()}>
+            <div className="statement-detail-head">
+              <div>
+                <div className="inbox-kicker"><CalendarRange size={13} /> Statement #{editingPeriod.id}</div>
+                <h2>Edit statement period</h2>
+                <div className="faint">
+                  Enter the billing-cycle dates printed on the statement. This changes coverage only—not transactions.
+                </div>
+              </div>
+              <button title="Close" disabled={busy} onClick={() => setEditingPeriod(null)}>
+                <X size={14} />
+              </button>
+            </div>
+            {error && <div className="alert error">{error}</div>}
+            <div className="form-grid-2">
+              <div className="form-row">
+                <label>Statement start date</label>
+                <input
+                  type="date"
+                  value={periodStartDate}
+                  onChange={(event) => setPeriodStartDate(event.target.value)}
+                />
+              </div>
+              <div className="form-row">
+                <label>Statement end date</label>
+                <input
+                  type="date"
+                  value={periodEndDate}
+                  onChange={(event) => setPeriodEndDate(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="statement-reconcile-note">
+              The end month counts as the completed statement cycle. Any days carried into another calendar month appear there as partial coverage.
+            </div>
+            <div className="modal-actions">
+              <button disabled={busy} onClick={() => setEditingPeriod(null)}>Cancel</button>
+              <button
+                className="primary"
+                disabled={
+                  busy ||
+                  !periodStartDate ||
+                  !periodEndDate ||
+                  periodStartDate > periodEndDate
+                }
+                onClick={savePeriod}
+              >
+                {busy ? "Saving…" : "Save period"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showUpload && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!busy) {
+              setShowUpload(false);
+              setAttachStatement(null);
+            }
+          }}
+        >
+          <div className="modal statement-upload-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="statement-detail-head">
+              <div>
+                <div className="inbox-kicker">
+                  <FileUp size={13} /> {attachStatement ? `Statement #${attachStatement.id}` : "Statement inbox"}
+                </div>
+                <h2>{attachStatement ? "Attach original file" : "Store a statement file"}</h2>
+                <div className="faint">
+                  {attachStatement
+                    ? "Attach the original PDF or CSV. Transactions, categories, and reconciliation stay unchanged."
+                    : "Upload a PDF or CSV. AI will read it and choose the account through MCP."}
+                </div>
+              </div>
+              <button
+                title="Close"
+                disabled={busy}
+                onClick={() => {
+                  setShowUpload(false);
+                  setAttachStatement(null);
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            {error && <div className="alert error">{error}</div>}
+            {attachStatement && (
+              <div className="statement-attachment-account">
+                <span>Existing statement</span>
+                <strong>{attachStatement.account_name}</strong>
+                <small>{periodLabel(attachStatement)} · transactions will not be changed</small>
+              </div>
+            )}
+            <label
+              className={`statement-dropzone ${dragging ? "dragging" : ""} ${uploadFile ? "selected" : ""}`}
+              onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={(event) => { event.preventDefault(); setDragging(false); }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragging(false);
+                const file = event.dataTransfer.files[0];
+                if (file) setUploadFile(file);
+              }}
+            >
+              <input
+                type="file"
+                accept="application/pdf,text/csv,.pdf,.csv"
+                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+              />
+              {uploadFile ? <FileCheck2 size={24} /> : <FileUp size={24} />}
+              <strong>{uploadFile ? uploadFile.name : "Drop one PDF or CSV here"}</strong>
+              <span>
+                {uploadFile
+                  ? `${(uploadFile.size / 1024 / 1024).toFixed(2)} MiB · click to choose another`
+                  : "or click to browse · maximum 20 MiB"}
+              </span>
+            </label>
+            <div className="modal-actions">
+              <button
+                disabled={busy}
+                onClick={() => {
+                  setShowUpload(false);
+                  setAttachStatement(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                disabled={busy || !uploadFile}
+                onClick={upload}
+              >
+                {busy ? "Storing…" : attachStatement ? "Attach file" : "Store file"}
+              </button>
             </div>
           </div>
         </div>

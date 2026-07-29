@@ -4,6 +4,7 @@ import type {
   NetWorthSummary,
   SpendingSummary,
   FinancialInboxSummary,
+  StatementDocument,
   StatementDetail,
   StatementRecord,
 } from "@my-money/shared";
@@ -34,6 +35,11 @@ export const api = {
       headers: body !== undefined ? { "Content-Type": "application/json" } : {},
       body: body !== undefined ? JSON.stringify(body) : undefined,
     }).then((r) => j<T>(r)),
+  postForm: <T>(path: string, body: FormData) =>
+    fetch(`/api${path}`, {
+      method: "POST",
+      body,
+    }).then((r) => j<T>(r)),
   patch: <T>(path: string, body: unknown) =>
     fetch(`/api${path}`, {
       method: "PATCH",
@@ -55,6 +61,7 @@ export type {
   NetWorthSummary,
   SpendingSummary,
   FinancialInboxSummary,
+  StatementDocument,
   StatementDetail,
   StatementRecord,
 };
@@ -74,6 +81,11 @@ export interface TxnRow {
   category_icon: string | null;
   category_source: string | null;
   is_transfer: 0 | 1;
+  transfer_peer_id: number | null;
+  refund_peer_id: number | null;
+  refund_peer_amount_cents: number | null;
+  refund_peer_description: string | null;
+  refund_peer_date: string | null;
   notes: string | null;
 }
 

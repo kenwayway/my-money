@@ -15,7 +15,13 @@ const TRANSFER_PREVIEW_LIMIT = 5;
 /** Actionable data-quality and maintenance work for the Dashboard inbox. */
 export function financialInbox(): FinancialInboxSummary {
   const uncategorized = (
-    db.prepare("SELECT COUNT(*) AS n FROM transactions WHERE category_id IS NULL AND is_transfer = 0").get() as {
+    db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM transactions
+       WHERE category_id IS NULL
+         AND is_transfer = 0
+         AND NOT (amount_cents > 0 AND refund_peer_id IS NOT NULL)`
+    ).get() as {
       n: number;
     }
   ).n;

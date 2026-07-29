@@ -50,6 +50,24 @@ export function initDb(): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_transfer_peer_unique
       ON transactions(transfer_peer_id)
       WHERE transfer_peer_id IS NOT NULL;
+    UPDATE transactions
+    SET refund_peer_id = NULL
+    WHERE refund_peer_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions AS peer
+        WHERE peer.id = transactions.refund_peer_id
+          AND peer.refund_peer_id = transactions.id
+          AND (
+            (transactions.amount_cents < 0 AND peer.amount_cents > 0
+              AND peer.amount_cents <= -transactions.amount_cents)
+            OR
+            (transactions.amount_cents > 0 AND peer.amount_cents < 0
+              AND transactions.amount_cents <= -peer.amount_cents)
+          )
+      );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_refund_peer_unique
+      ON transactions(refund_peer_id)
+      WHERE refund_peer_id IS NOT NULL;
   `);
 }
 
@@ -170,6 +188,75 @@ function migrateDb(): void {
 
         PRAGMA user_version = 4;
       `);
+    });
+  }
+
+  if (version < 5) {
+    tx(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS statement_documents (
+          id INTEGER PRIMARY KEY,
+          account_id INTEGER NOT NULL REFERENCES accounts(id),
+          import_id INTEGER UNIQUE REFERENCES imports(id) ON DELETE SET NULL,
+          original_name TEXT NOT NULL,
+          storage_key TEXT NOT NULL UNIQUE,
+          file_sha256 TEXT NOT NULL UNIQUE,
+          size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+          mime_type TEXT NOT NULL DEFAULT 'application/pdf',
+          uploaded_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE INDEX IF NOT EXISTS idx_statement_documents_account
+          ON statement_documents(account_id, uploaded_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_statement_documents_import
+          ON statement_documents(import_id);
+
+        PRAGMA user_version = 5;
+      `);
+    });
+  }
+
+  if (version < 6) {
+    tx(() => {
+      db.exec(`
+        ALTER TABLE statement_documents RENAME TO statement_documents_v5;
+
+        CREATE TABLE statement_documents (
+          id INTEGER PRIMARY KEY,
+          account_id INTEGER REFERENCES accounts(id),
+          import_id INTEGER UNIQUE REFERENCES imports(id) ON DELETE SET NULL,
+          original_name TEXT NOT NULL,
+          storage_key TEXT NOT NULL UNIQUE,
+          file_sha256 TEXT NOT NULL UNIQUE,
+          size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+          mime_type TEXT NOT NULL CHECK(mime_type IN ('application/pdf','text/csv')),
+          uploaded_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        INSERT INTO statement_documents
+          (id, account_id, import_id, original_name, storage_key, file_sha256,
+           size_bytes, mime_type, uploaded_at)
+        SELECT id, account_id, import_id, original_name, storage_key, file_sha256,
+               size_bytes, mime_type, uploaded_at
+        FROM statement_documents_v5;
+
+        DROP TABLE statement_documents_v5;
+
+        CREATE INDEX idx_statement_documents_account
+          ON statement_documents(account_id, uploaded_at DESC);
+        CREATE INDEX idx_statement_documents_import
+          ON statement_documents(import_id);
+
+        PRAGMA user_version = 6;
+      `);
+    });
+  }
+
+  if (version < 7) {
+    tx(() => {
+      if (!hasColumn("transactions", "refund_peer_id")) {
+        db.exec("ALTER TABLE transactions ADD COLUMN refund_peer_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL");
+      }
+      db.exec("PRAGMA user_version = 7");
     });
   }
 }

@@ -4,6 +4,12 @@ import { zValidator } from "@hono/zod-validator";
 import { db, tx } from "../db/connection.js";
 import { upsertRuleSafe } from "../services/categorizer.js";
 import { pairTransfer, unmarkTransferInTransaction } from "../services/transfers.js";
+import {
+  pairRefund,
+  refundCandidates,
+  unpairRefund,
+  unpairRefundInTransaction,
+} from "../services/refunds.js";
 import type { Transaction } from "@my-money/shared";
 
 const PatchBody = z.object({
@@ -35,7 +41,9 @@ export const transactionsRoute = new Hono()
       cond.push("t.category_id = @category_id");
       params.category_id = Number(q.category_id);
     }
-    if (q.uncategorized === "1") cond.push("t.category_id IS NULL");
+    if (q.uncategorized === "1") {
+      cond.push("t.category_id IS NULL AND NOT (t.amount_cents > 0 AND t.refund_peer_id IS NOT NULL)");
+    }
     if (q.q) {
       cond.push("(t.description_raw LIKE @search OR t.merchant_norm LIKE @search OR t.notes LIKE @search)");
       params.search = `%${q.q}%`;
@@ -46,10 +54,14 @@ export const transactionsRoute = new Hono()
     const rows = db
       .prepare(
         `SELECT t.*, a.name AS account_name, a.currency AS account_currency,
-                c.name AS category_name, c.color AS category_color, c.icon AS category_icon
+                c.name AS category_name, c.color AS category_color, c.icon AS category_icon,
+                refund_peer.amount_cents AS refund_peer_amount_cents,
+                refund_peer.description_raw AS refund_peer_description,
+                refund_peer.posted_date AS refund_peer_date
          FROM transactions t
          JOIN accounts a ON a.id = t.account_id
          LEFT JOIN categories c ON c.id = t.category_id
+         LEFT JOIN transactions refund_peer ON refund_peer.id = t.refund_peer_id
          ${where}
          ORDER BY t.posted_date DESC, t.id DESC
          LIMIT @limit OFFSET @offset`
@@ -88,7 +100,10 @@ export const transactionsRoute = new Hono()
       }
       if (b.notes !== undefined) db.prepare("UPDATE transactions SET notes = ? WHERE id = ?").run(b.notes, id);
       if (b.is_transfer !== undefined) {
-        if (b.is_transfer === 1) db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
+        if (b.is_transfer === 1) {
+          unpairRefundInTransaction(id);
+          db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
+        }
         else unmarkTransferInTransaction(id);
       }
     });
@@ -112,6 +127,40 @@ export const transactionsRoute = new Hono()
     ).n;
     return c.json({ count: n, merchant_norm: existing.merchant_norm });
   })
+  .get("/:id/refund-candidates", (c) => {
+    try {
+      return c.json(refundCandidates(Number(c.req.param("id"))));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+  })
+  .delete("/:id/refund-pair", (c) => {
+    try {
+      unpairRefund(Number(c.req.param("id")));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+    }
+    return c.json({ unpaired: true });
+  })
+  .post(
+    "/pair-refund",
+    zValidator(
+      "json",
+      z.object({
+        expense_id: z.number().int(),
+        refund_id: z.number().int(),
+      })
+    ),
+    (c) => {
+      const { expense_id, refund_id } = c.req.valid("json");
+      try {
+        pairRefund(expense_id, refund_id);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      return c.json({ paired: true });
+    }
+  )
   .post(
     "/pair-transfer",
     zValidator(

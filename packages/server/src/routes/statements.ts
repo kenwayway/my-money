@@ -6,6 +6,7 @@ import {
   listStatements,
   reconcileStatement,
   statementDetail,
+  updateStatementPeriod,
 } from "../services/statements.js";
 
 export const statementsRoute = new Hono()
@@ -14,6 +15,33 @@ export const statementsRoute = new Hono()
     const detail = statementDetail(Number(c.req.param("id")));
     return detail ? c.json(detail) : c.json({ error: "not found" }, 404);
   })
+  .patch(
+    "/:id/period",
+    zValidator(
+      "json",
+      z.object({
+        statement_start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        statement_end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    ),
+    (c) => {
+      try {
+        const body = c.req.valid("json");
+        return c.json(
+          updateStatementPeriod(
+            Number(c.req.param("id")),
+            body.statement_start_date,
+            body.statement_end_date
+          )
+        );
+      } catch (err) {
+        return c.json(
+          { error: err instanceof Error ? err.message : String(err) },
+          400
+        );
+      }
+    }
+  )
   .post(
     "/:id/reconcile",
     zValidator(
