@@ -49,7 +49,7 @@ export const summaryRoute = new Hono()
          LEFT JOIN transactions refund
            ON refund.id = t.refund_peer_id AND refund.refund_peer_id = t.id
          LEFT JOIN categories c ON c.id = t.category_id
-         WHERE t.is_transfer = 0 AND (c.name IS NULL OR c.name != 'Transfer')
+         WHERE t.is_transfer = 0 AND (c.type IS NULL OR c.type != 'transfer')
            AND substr(t.posted_date, 1, 7) >= ? AND substr(t.posted_date, 1, 7) <= ?
          GROUP BY t.account_id, ym`
       )

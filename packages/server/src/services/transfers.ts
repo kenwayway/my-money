@@ -1,5 +1,69 @@
 import { db, tx } from "../db/connection.js";
+import { unpairRefundInTransaction } from "./refunds.js";
 import type { TransferPairSuggestion } from "@my-money/shared";
+
+/**
+ * Ids of every category typed 'transfer'. The user may keep more than one (e.g.
+ * "Credit card payment" alongside "Transfer") and may rename any of them, so
+ * transfer-ness is always resolved through the type, never a name.
+ */
+export function transferCategoryIds(): Set<number> {
+  const rows = db.prepare("SELECT id FROM categories WHERE type = 'transfer'").all() as { id: number }[];
+  return new Set(rows.map((r) => r.id));
+}
+
+export function isTransferCategory(categoryId: number | null): boolean {
+  return categoryId !== null && transferCategoryIds().has(categoryId);
+}
+
+/** The category stamped on a transaction the user marks as a transfer by hand. */
+export function defaultTransferCategoryId(): number | null {
+  const row = db
+    .prepare(
+      `SELECT id FROM categories WHERE type = 'transfer'
+       ORDER BY is_system DESC, sort_order, id LIMIT 1`
+    )
+    .get() as { id: number } | undefined;
+  return row?.id ?? null;
+}
+
+/**
+ * Mark one transaction as a transfer, keeping its category in lockstep.
+ *
+ * is_transfer and a transfer-typed category are two encodings of the same fact.
+ * If they drift, a transaction counts as spending in one query and not in
+ * another, so every write path goes through here. Caller owns the database
+ * transaction.
+ */
+export function markTransferInTransaction(id: number): void {
+  const row = db.prepare("SELECT category_id FROM transactions WHERE id = ?").get(id) as
+    | { category_id: number | null }
+    | undefined;
+  if (!row) throw new Error(`transaction ${id} not found`);
+  unpairRefundInTransaction(id); // a refund is a real inflow, not an internal move
+  // A transfer category the user already picked is more specific — keep it.
+  const categoryId = isTransferCategory(row.category_id) ? row.category_id : defaultTransferCategoryId();
+  db.prepare("UPDATE transactions SET is_transfer = 1, category_id = ?, category_source = ? WHERE id = ?").run(
+    categoryId,
+    categoryId === null ? null : "user",
+    id
+  );
+}
+
+/**
+ * Reconcile the transfer flag after a category change. Moving a transaction
+ * onto a transfer category says "this is not spending"; moving it off says the
+ * opposite and dissolves any pairing. Caller owns the database transaction.
+ */
+export function syncTransferForCategoryChange(id: number, categoryId: number | null): void {
+  const row = db.prepare("SELECT is_transfer FROM transactions WHERE id = ?").get(id) as
+    | { is_transfer: 0 | 1 }
+    | undefined;
+  if (!row) return;
+  const wantsTransfer = isTransferCategory(categoryId);
+  if (wantsTransfer && !row.is_transfer) markTransferInTransaction(id);
+  else if (!wantsTransfer && row.is_transfer) unmarkTransferUpdates(id);
+}
 
 interface PairSide {
   id: number;
@@ -49,16 +113,37 @@ export function pairTransfer(
   tx(() => {
     for (const side of [a, b]) {
       if (side.transfer_peer_id !== null && side.transfer_peer_id !== idA && side.transfer_peer_id !== idB) {
-        db.prepare(
-          `UPDATE transactions SET transfer_peer_id = NULL, is_transfer = 0
-           WHERE id = ? AND transfer_peer_id = ?`
-        ).run(side.transfer_peer_id, side.id);
+        const orphan = db.prepare("SELECT transfer_peer_id FROM transactions WHERE id = ?").get(side.transfer_peer_id) as
+          | { transfer_peer_id: number | null }
+          | undefined;
+        if (orphan?.transfer_peer_id === side.id) clearTransferOn(side.transfer_peer_id);
       }
     }
-    db.prepare("UPDATE transactions SET is_transfer = 1, transfer_peer_id = ? WHERE id = ?").run(idB, idA);
-    db.prepare("UPDATE transactions SET is_transfer = 1, transfer_peer_id = ? WHERE id = ?").run(idA, idB);
+    markTransferInTransaction(idA);
+    markTransferInTransaction(idB);
+    db.prepare("UPDATE transactions SET transfer_peer_id = ? WHERE id = ?").run(idB, idA);
+    db.prepare("UPDATE transactions SET transfer_peer_id = ? WHERE id = ?").run(idA, idB);
   });
   return { a, b, mismatch };
+}
+
+/**
+ * Clear the flag, the pairing, and — to hold the invariant — a category that
+ * only made sense while this was a transfer. The transaction becomes
+ * uncategorized rather than keeping a "Transfer" label it no longer earns, so
+ * it surfaces in the uncategorized queue for the user to say what it really was.
+ */
+function clearTransferOn(id: number): void {
+  const transferIds = [...transferCategoryIds()];
+  const placeholders = transferIds.map(() => "?").join(",");
+  db.prepare(
+    `UPDATE transactions
+     SET is_transfer = 0,
+         transfer_peer_id = NULL,
+         category_id = CASE WHEN category_id IN (${placeholders || "NULL"}) THEN NULL ELSE category_id END,
+         category_source = CASE WHEN category_id IN (${placeholders || "NULL"}) THEN NULL ELSE category_source END
+     WHERE id = ?`
+  ).run(...transferIds, ...transferIds, id);
 }
 
 function unmarkTransferUpdates(id: number): void {
@@ -66,12 +151,12 @@ function unmarkTransferUpdates(id: number): void {
     | { transfer_peer_id: number | null }
     | undefined;
   if (!row) throw new Error(`transaction ${id} not found`);
-  db.prepare("UPDATE transactions SET is_transfer = 0, transfer_peer_id = NULL WHERE id = ?").run(id);
+  clearTransferOn(id);
   if (row.transfer_peer_id !== null) {
-    db.prepare(
-      `UPDATE transactions SET is_transfer = 0, transfer_peer_id = NULL
-       WHERE id = ? AND transfer_peer_id = ?`
-    ).run(row.transfer_peer_id, id);
+    const peer = db.prepare("SELECT transfer_peer_id FROM transactions WHERE id = ?").get(row.transfer_peer_id) as
+      | { transfer_peer_id: number | null }
+      | undefined;
+    if (peer?.transfer_peer_id === id) clearTransferOn(row.transfer_peer_id);
   }
 }
 

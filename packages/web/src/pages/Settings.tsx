@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Trash2, Plus, Download } from "lucide-react";
-import { api, fmtMoney, type Category } from "../api";
+import { api, fmtMoney, type Category, type CategoryType } from "../api";
 import { catEmoji } from "../categoryIcons";
 
 interface RuleRow {
@@ -23,7 +23,7 @@ export default function Settings() {
   const [fx, setFx] = useState<FxRow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [newFx, setNewFx] = useState({ currency: "", rate: "" });
-  const [newCat, setNewCat] = useState({ name: "", type: "expense" as "expense" | "income" });
+  const [newCat, setNewCat] = useState({ name: "", type: "expense" as CategoryType });
 
   const load = () => {
     api.get<Record<string, string | boolean>>("/settings").then(setSettings).catch(console.error);
@@ -149,9 +149,14 @@ export default function Settings() {
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
             <input placeholder="New category…" value={newCat.name} onChange={(e) => setNewCat({ ...newCat, name: e.target.value })} />
-            <select value={newCat.type} onChange={(e) => setNewCat({ ...newCat, type: e.target.value as "expense" | "income" })}>
+            <select
+              value={newCat.type}
+              onChange={(e) => setNewCat({ ...newCat, type: e.target.value as CategoryType })}
+              title="transfer categories are excluded from both spending and income"
+            >
               <option value="expense">expense</option>
               <option value="income">income</option>
+              <option value="transfer">transfer</option>
             </select>
             <button
               disabled={!newCat.name}

@@ -259,4 +259,67 @@ function migrateDb(): void {
       db.exec("PRAGMA user_version = 7");
     });
   }
+
+  if (version < 8) {
+    // Widening the categories CHECK needs a full table rebuild, and categories
+    // is a parent of transactions and merchant_rules — foreign keys must be off
+    // while the old table is dropped, which SQLite only honours outside a
+    // transaction.
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      tx(() => {
+        db.exec(`
+          CREATE TABLE categories_v8 (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            type TEXT NOT NULL CHECK(type IN ('income','expense','transfer')),
+            color TEXT NOT NULL,
+            icon TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_system INTEGER NOT NULL DEFAULT 0
+          );
+
+          INSERT INTO categories_v8 (id, name, type, color, icon, sort_order, is_system)
+          SELECT id, name, type, color, icon, sort_order, is_system FROM categories;
+
+          DROP TABLE categories;
+          ALTER TABLE categories_v8 RENAME TO categories;
+
+          -- The system Transfer category used to be typed 'expense', which
+          -- forced every spending query to special-case it by name.
+          UPDATE categories SET type = 'transfer' WHERE is_system = 1 AND name = 'Transfer';
+        `);
+
+        // is_transfer and a transfer-typed category encode the same fact, but
+        // the edit paths used to write them independently. Repair both
+        // directions before the invariant starts being enforced.
+        db.exec(`
+          UPDATE transactions
+          SET is_transfer = 1
+          WHERE is_transfer = 0
+            AND category_id IN (SELECT id FROM categories WHERE type = 'transfer');
+
+          UPDATE transactions
+          SET category_id = (
+                SELECT id FROM categories WHERE type = 'transfer'
+                ORDER BY is_system DESC, sort_order, id LIMIT 1
+              ),
+              category_source = 'user'
+          WHERE is_transfer = 1
+            AND EXISTS (SELECT 1 FROM categories WHERE type = 'transfer')
+            AND (category_id IS NULL
+                 OR category_id NOT IN (SELECT id FROM categories WHERE type = 'transfer'));
+
+          PRAGMA user_version = 8;
+        `);
+
+        const dangling = db.prepare("PRAGMA foreign_key_check").all();
+        if (dangling.length > 0) {
+          throw new Error(`categories rebuild left ${dangling.length} dangling foreign key reference(s)`);
+        }
+      });
+    } finally {
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
 }

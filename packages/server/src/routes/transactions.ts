@@ -3,13 +3,14 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { db, tx } from "../db/connection.js";
 import { upsertRuleSafe } from "../services/categorizer.js";
-import { pairTransfer, unmarkTransferInTransaction } from "../services/transfers.js";
 import {
-  pairRefund,
-  refundCandidates,
-  unpairRefund,
-  unpairRefundInTransaction,
-} from "../services/refunds.js";
+  isTransferCategory,
+  markTransferInTransaction,
+  pairTransfer,
+  syncTransferForCategoryChange,
+  unmarkTransferInTransaction,
+} from "../services/transfers.js";
+import { pairRefund, refundCandidates, unpairRefund } from "../services/refunds.js";
 import type { Transaction } from "@my-money/shared";
 
 const PatchBody = z.object({
@@ -85,25 +86,35 @@ export const transactionsRoute = new Hono()
           b.category_id === null ? null : "user",
           id
         );
+        // A transfer-typed category is itself a statement about transfer-ness.
+        syncTransferForCategoryChange(id, b.category_id);
         if (b.category_id !== null) {
           upsertRuleSafe(existing.merchant_norm, b.category_id, "user");
           if (b.apply_to_same_merchant) {
+            const toTransfer = isTransferCategory(b.category_id);
             const info = db
               .prepare(
                 `UPDATE transactions SET category_id = ?, category_source = 'user'
-                 WHERE merchant_norm = ? AND id != ? AND (category_source IS NULL OR category_source != 'user')`
+                 WHERE merchant_norm = ? AND id != ? AND (category_source IS NULL OR category_source != 'user')
+                   ${toTransfer ? "" : "AND is_transfer = 0"}`
               )
               .run(b.category_id, existing.merchant_norm, id);
             sameMerchantUpdated = Number(info.changes);
+            // Bulk-applying a transfer category flags the whole merchant; bulk
+            // *un*-transferring is deliberately not done in one click, since it
+            // would silently dissolve pairings on the other side.
+            if (toTransfer) {
+              db.prepare(
+                `UPDATE transactions SET is_transfer = 1
+                 WHERE merchant_norm = ? AND id != ? AND category_id = ? AND is_transfer = 0`
+              ).run(existing.merchant_norm, id, b.category_id);
+            }
           }
         }
       }
       if (b.notes !== undefined) db.prepare("UPDATE transactions SET notes = ? WHERE id = ?").run(b.notes, id);
       if (b.is_transfer !== undefined) {
-        if (b.is_transfer === 1) {
-          unpairRefundInTransaction(id);
-          db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
-        }
+        if (b.is_transfer === 1) markTransferInTransaction(id);
         else unmarkTransferInTransaction(id);
       }
     });

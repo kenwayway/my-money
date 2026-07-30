@@ -1,6 +1,7 @@
 import type {
   AccountWithBalance,
   Category,
+  CategoryType,
   NetWorthSummary,
   SpendingSummary,
   FinancialInboxSummary,
@@ -58,6 +59,7 @@ export const api = {
 export type {
   AccountWithBalance,
   Category,
+  CategoryType,
   NetWorthSummary,
   SpendingSummary,
   FinancialInboxSummary,

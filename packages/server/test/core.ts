@@ -51,6 +51,51 @@ legacy.exec(`
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
+  -- pre-v8 categories: 'transfer' was modelled as a flavour of expense, so the
+  -- CHECK rejects it and the table has to be rebuilt.
+  CREATE TABLE categories (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL CHECK(type IN ('income','expense')),
+    color TEXT NOT NULL,
+    icon TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_system INTEGER NOT NULL DEFAULT 0
+  );
+  INSERT INTO categories (name, type, color, icon, sort_order, is_system) VALUES
+    ('Groceries', 'expense', '#22c55e', 'shopping-cart', 0, 0),
+    ('Rent', 'expense', '#ef4444', 'home', 1, 0),
+    ('Other', 'expense', '#9ca3af', 'circle-ellipsis', 2, 0),
+    ('Transfer', 'expense', '#a1a1aa', 'arrow-left-right', 3, 1),
+    ('Uncategorized', 'expense', '#d4d4d8', 'help-circle', 4, 1);
+
+  CREATE TABLE transactions (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    posted_date TEXT NOT NULL,
+    description_raw TEXT NOT NULL,
+    merchant_norm TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+    category_source TEXT,
+    is_transfer INTEGER NOT NULL DEFAULT 0,
+    transfer_peer_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+    import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL,
+    fingerprint TEXT NOT NULL,
+    notes TEXT,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(account_id, fingerprint)
+  );
+  -- Both directions of the drift the old edit paths could produce.
+  INSERT INTO transactions
+    (account_id, posted_date, description_raw, merchant_norm, amount_cents,
+     category_id, category_source, is_transfer, fingerprint)
+  VALUES
+    (1, '2025-01-05', 'CC PAYMENT', 'CC PAYMENT', 50000,
+     (SELECT id FROM categories WHERE name = 'Transfer'), 'user', 0, 'legacy-drift-category-only'),
+    (1, '2025-01-06', 'TFR TO SAVINGS', 'TFR TO SAVINGS', -25000,
+     (SELECT id FROM categories WHERE name = 'Groceries'), 'user', 1, 'legacy-drift-flag-only');
+
   CREATE TABLE statement_documents (
     id INTEGER PRIMARY KEY,
     account_id INTEGER NOT NULL REFERENCES accounts(id),
@@ -76,6 +121,8 @@ const { financialInbox } = await import("../src/services/inbox.js");
 const { pairRefund, refundCandidates, unpairRefund } = await import("../src/services/refunds.js");
 const { monthlySpendingByCategory } = await import("../src/services/spending.js");
 const { summaryRoute } = await import("../src/routes/summary.js");
+const { transactionsRoute } = await import("../src/routes/transactions.js");
+const { categoriesRoute } = await import("../src/routes/categories.js");
 const {
   MAX_STATEMENT_FILE_BYTES,
   StatementDocumentError,
@@ -95,7 +142,26 @@ const {
 
 initDb();
 seedDb();
-assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 7);
+assert.equal((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+
+// ---- transfer modelling: one fact, one representation ----
+const transferCat = db.prepare("SELECT id, type FROM categories WHERE name = 'Transfer'").get() as {
+  id: number;
+  type: string;
+};
+assert.equal(transferCat.type, "transfer", "the system Transfer category must be retyped by the migration");
+const driftRows = db
+  .prepare("SELECT fingerprint, category_id, is_transfer FROM transactions ORDER BY fingerprint")
+  .all() as { fingerprint: string; category_id: number | null; is_transfer: number }[];
+assert.deepEqual(
+  driftRows.map((r) => [r.fingerprint, r.category_id, r.is_transfer]),
+  [
+    ["legacy-drift-category-only", transferCat.id, 1],
+    ["legacy-drift-flag-only", transferCat.id, 1],
+  ],
+  "the migration must repair drift in both directions"
+);
+db.prepare("DELETE FROM transactions").run();
 const migratedLegacyDocument = statementDocumentById(1)!;
 assert.equal(migratedLegacyDocument.original_name, "legacy.pdf");
 assert.equal(migratedLegacyDocument.account_id, 1);
@@ -426,7 +492,91 @@ assert.equal(
   200
 );
 
+// ---- the transfer invariant holds across every write path ----
+const invariantTxn = Number(
+  db
+    .prepare(
+      `INSERT INTO transactions
+       (account_id, posted_date, description_raw, merchant_norm, amount_cents, fingerprint)
+       VALUES (?, '2026-09-04', 'CC PAYMENT THANK YOU', 'CC PAYMENT THANK YOU', -30000, 'core-invariant')`
+    )
+    .run(chequing.lastInsertRowid).lastInsertRowid
+);
+const readInvariant = () =>
+  db.prepare("SELECT category_id, is_transfer FROM transactions WHERE id = ?").get(invariantTxn) as {
+    category_id: number | null;
+    is_transfer: number;
+  };
+const patchInvariant = (body: unknown) =>
+  transactionsRoute.request(`/${invariantTxn}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+assert.equal((await patchInvariant({ category_id: transferCat.id })).status, 200);
+assert.deepEqual(
+  readInvariant(),
+  { category_id: transferCat.id, is_transfer: 1 },
+  "picking a transfer-typed category must set the flag"
+);
+assert.equal(
+  monthlySpendingByCategory("2026-09").length,
+  0,
+  "a transfer must not appear as spending"
+);
+
+assert.equal((await patchInvariant({ category_id: rentCategory.id })).status, 200);
+assert.deepEqual(
+  readInvariant(),
+  { category_id: rentCategory.id, is_transfer: 0 },
+  "moving off a transfer category must clear the flag"
+);
+// Guards the assertions above and below: this row *is* visible to the spending
+// query, so an empty September result means transfer exclusion, not an empty set.
+assert.deepEqual(
+  monthlySpendingByCategory("2026-09").map((row) => [row.category_name, row.total_cad_cents]),
+  [["Rent", 30000]],
+  "an ordinary expense in this month must show up as spending"
+);
+
+assert.equal((await patchInvariant({ is_transfer: 1 })).status, 200);
+assert.deepEqual(
+  readInvariant(),
+  { category_id: transferCat.id, is_transfer: 1 },
+  "marking a transfer by hand must stamp the transfer category"
+);
+
+assert.equal((await patchInvariant({ is_transfer: 0 })).status, 200);
+assert.deepEqual(
+  readInvariant(),
+  { category_id: null, is_transfer: 0 },
+  "unmarking must drop the category it no longer earns, leaving it for review"
+);
+
+// The regression this modelling change exists to prevent: spending queries used
+// to exclude transfers by matching the literal name 'Transfer'.
+await patchInvariant({ category_id: transferCat.id });
+const renameResponse = await categoriesRoute.request(`/${transferCat.id}`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ name: "Internal move" }),
+});
+assert.equal(renameResponse.status, 200);
+assert.equal(
+  monthlySpendingByCategory("2026-09").length,
+  0,
+  "renaming the transfer category must not pull transfers back into spending"
+);
+
+const retypeResponse = await categoriesRoute.request(`/${transferCat.id}`, {
+  method: "PATCH",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ type: "expense" }),
+});
+assert.equal(retypeResponse.status, 400, "a system category's type must not be changeable");
+
 db.close();
 fs.rmSync(scratchDir, { recursive: true, force: true });
 
-console.log("Core tests OK — backup, financial inbox, and statement center");
+console.log("Core tests OK — backup, financial inbox, statement center, and transfer modelling");

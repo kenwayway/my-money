@@ -114,7 +114,7 @@ export function refundCandidates(refundId: number): RefundPairSide[] {
        AND t.is_transfer = 0
        AND t.transfer_peer_id IS NULL
        AND t.refund_peer_id IS NULL
-       AND (c.name IS NULL OR c.name != 'Transfer')
+       AND (c.type IS NULL OR c.type != 'transfer')
      ORDER BY ABS(julianday(t.posted_date) - julianday(?)), t.posted_date DESC
      LIMIT 50`
   ).all(refund.id, refund.amount_cents, refund.currency, refund.posted_date) as unknown as RefundPairSide[];

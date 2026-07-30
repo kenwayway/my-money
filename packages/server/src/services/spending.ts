@@ -25,11 +25,13 @@ export function missingFxCurrenciesForRange(fromMonth: string, toMonth: string):
       `SELECT DISTINCT a.currency
        FROM transactions t
        JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN categories c ON c.id = t.category_id
        LEFT JOIN fx_rates f ON f.currency = a.currency
        WHERE a.currency != 'CAD'
          AND f.currency IS NULL
          AND t.is_transfer = 0
          AND NOT (t.amount_cents > 0 AND t.refund_peer_id IS NOT NULL)
+         AND (c.type IS NULL OR c.type != 'transfer')
          AND substr(t.posted_date, 1, 7) BETWEEN ? AND ?
        ORDER BY a.currency`
     )
@@ -66,7 +68,7 @@ export function monthlySpendingByCategory(
        WHERE t.is_transfer = 0
          AND NOT (t.amount_cents > 0 AND refund.id IS NOT NULL)
          AND substr(t.posted_date, 1, 7) = ?
-         AND (c.name IS NULL OR c.name != 'Transfer')
+         AND (c.type IS NULL OR c.type != 'transfer')
        GROUP BY t.account_id, t.category_id`
     )
     .all(month) as {

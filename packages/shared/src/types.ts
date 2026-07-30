@@ -45,7 +45,12 @@ export interface BalanceSnapshot {
   created_at: number;
 }
 
-export type CategoryType = "income" | "expense";
+/**
+ * 'transfer' marks categories for movement between the user's own accounts —
+ * neither income nor expense. Spending queries exclude it by type so renaming
+ * the category cannot break them.
+ */
+export type CategoryType = "income" | "expense" | "transfer";
 
 export interface Category {
   id: number;

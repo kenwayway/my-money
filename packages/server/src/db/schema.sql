@@ -14,10 +14,13 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+-- 'transfer' is a third kind, not a flavour of expense: money moving between the
+-- user's own accounts is neither income nor spending. Every aggregation filters
+-- on this type, never on the category name — names are user-editable.
 CREATE TABLE IF NOT EXISTS categories (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL CHECK(type IN ('income','expense')),
+  type TEXT NOT NULL CHECK(type IN ('income','expense','transfer')),
   color TEXT NOT NULL,
   icon TEXT NOT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,

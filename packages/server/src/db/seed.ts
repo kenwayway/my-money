@@ -1,8 +1,9 @@
 import { db, tx } from "./connection.js";
+import type { CategoryType } from "@my-money/shared";
 
 interface SeedCategory {
   name: string;
-  type: "income" | "expense";
+  type: CategoryType;
   color: string;
   icon: string;
   system?: boolean;
@@ -31,7 +32,7 @@ const DEFAULT_CATEGORIES: SeedCategory[] = [
   { name: "Refund", type: "income", color: "#84cc16", icon: "rotate-ccw" },
   { name: "Other Income", type: "income", color: "#4ade80", icon: "plus-circle" },
   // system categories — undeletable, excluded from spending charts appropriately
-  { name: "Transfer", type: "expense", color: "#a1a1aa", icon: "arrow-left-right", system: true },
+  { name: "Transfer", type: "transfer", color: "#a1a1aa", icon: "arrow-left-right", system: true },
   { name: "Uncategorized", type: "expense", color: "#d4d4d8", icon: "help-circle", system: true },
 ];
 

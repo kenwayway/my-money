@@ -28,8 +28,15 @@ import { seedDb } from "./db/seed.js";
 import { normalizeMerchant, upsertRuleSafe, categorizeByRules } from "./services/categorizer.js";
 import { dedupeRows } from "./import/dedupe.js";
 import { netWorth, withBalance, balanceAsOf } from "./services/balances.js";
-import { suggestTransferPairs, pairTransfer, unmarkTransfer } from "./services/transfers.js";
-import { pairRefund, unpairRefund, unpairRefundInTransaction } from "./services/refunds.js";
+import {
+  isTransferCategory,
+  markTransferInTransaction,
+  pairTransfer,
+  suggestTransferPairs,
+  syncTransferForCategoryChange,
+  unmarkTransfer,
+} from "./services/transfers.js";
+import { pairRefund, unpairRefund } from "./services/refunds.js";
 import {
   currentLocalMonth,
   currentLocalDate,
@@ -275,7 +282,8 @@ const TOOLS: AnyTool[] = [
 
   tool({
     name: "list_categories",
-    description: "List all spending/income categories. Use these exact names when categorizing transactions.",
+    description:
+      "List all categories with their type. Use these exact names when categorizing transactions. Type 'expense' and 'income' are ordinary spending/earning; type 'transfer' marks movement between the user's own accounts (credit-card payments, e-transfers to self) and is excluded from both spending and income — assigning such a category also flags the transaction as a transfer.",
     input: z.strictObject({}),
     handler() {
       return db.prepare("SELECT id, name, type FROM categories ORDER BY sort_order, name").all();
@@ -307,7 +315,7 @@ const TOOLS: AnyTool[] = [
   tool({
     name: "import_transactions",
     description:
-      "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; use 'Transfer' for e-transfers between the user's own accounts and credit-card payments). Categories you provide are remembered as merchant rules for future imports; where the user has previously corrected a merchant's category, that user rule takes precedence over your suggestion. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is reconciled before commit and rolls back by default if the balance does not match. Successful imports return an import_id that can undo the whole batch.",
+      "Bulk-import transactions you parsed from a bank statement into one account. Amounts are SIGNED INTEGER CENTS in the account's native currency: inflows positive, outflows/spending NEGATIVE (a credit-card charge is negative; a credit-card payment received is positive). Dedupe is automatic — re-importing overlapping statements is safe; duplicates are skipped and reported. Provide a category name per transaction when you can infer one (use list_categories names; for e-transfers between the user's own accounts and credit-card payments use the category whose type is 'transfer' — by default named 'Transfer' — which also marks the row as a transfer and keeps it out of spending). Categories you provide are remembered as merchant rules for future imports; where the user has previously corrected a merchant's category, that user rule takes precedence over your suggestion. If the statement shows a closing balance, ALSO pass statement_end_balance_cents — the import is reconciled before commit and rolls back by default if the balance does not match. Successful imports return an import_id that can undo the whole batch.",
     input: z.strictObject({
       account: AccountRef,
       statement_document_id: z
@@ -376,6 +384,11 @@ const TOOLS: AnyTool[] = [
       const txns = a.transactions;
 
       const cats = categoriesByName();
+      // Resolved once for the whole batch: any transfer-typed category flags the
+      // row, including extra ones the user added beyond the system "Transfer".
+      const transferCatIds = new Set(
+        [...cats.values()].filter((c) => c.type === "transfer").map((c) => c.id)
+      );
       const unknownCategories = new Set<string>();
 
       const rows = txns.map((t, i) => ({
@@ -478,7 +491,7 @@ const TOOLS: AnyTool[] = [
               categoryId = rule.category_id;
               source = "rule";
             }
-            const isTransfer = categoryId !== null && cats.get("transfer")?.id === categoryId ? 1 : 0;
+            const isTransfer = categoryId !== null && transferCatIds.has(categoryId) ? 1 : 0;
             const info = insert.run(
               account.id,
               r.posted_date,
@@ -672,16 +685,29 @@ const TOOLS: AnyTool[] = [
           categoryId === null ? null : "user",
           id
         );
+        // A transfer-typed category is itself a statement about transfer-ness.
+        syncTransferForCategoryChange(id, categoryId);
         if (categoryId !== null) {
           upsertRuleSafe(txn.merchant_norm, categoryId, "user");
           if (a.apply_to_same_merchant) {
+            const toTransfer = isTransferCategory(categoryId);
             const info = db
               .prepare(
                 `UPDATE transactions SET category_id = ?, category_source = 'user'
-                 WHERE merchant_norm = ? AND id != ? AND (category_source IS NULL OR category_source != 'user')`
+                 WHERE merchant_norm = ? AND id != ? AND (category_source IS NULL OR category_source != 'user')
+                   ${toTransfer ? "" : "AND is_transfer = 0"}`
               )
               .run(categoryId, txn.merchant_norm, id);
             bulkUpdated = Number(info.changes);
+            // Bulk-applying a transfer category flags the whole merchant; bulk
+            // *un*-transferring is deliberately not done in one call, since it
+            // would silently dissolve pairings on the other side.
+            if (toTransfer) {
+              db.prepare(
+                `UPDATE transactions SET is_transfer = 1
+                 WHERE merchant_norm = ? AND id != ? AND category_id = ? AND is_transfer = 0`
+              ).run(txn.merchant_norm, id, categoryId);
+            }
           }
         }
       });
@@ -719,14 +745,8 @@ const TOOLS: AnyTool[] = [
       const id = a.transaction_id;
       const exists = db.prepare("SELECT id FROM transactions WHERE id = ?").get(id);
       if (!exists) throw new Error(`transaction ${id} not found`);
-      if (a.is_transfer) {
-        tx(() => {
-          unpairRefundInTransaction(id);
-          db.prepare("UPDATE transactions SET is_transfer = 1 WHERE id = ?").run(id);
-        });
-      } else {
-        unmarkTransfer(id);
-      }
+      if (a.is_transfer) tx(() => markTransferInTransaction(id));
+      else unmarkTransfer(id);
       return { updated: true };
     },
   }),

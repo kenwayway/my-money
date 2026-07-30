@@ -6,7 +6,7 @@ import type { Category } from "@my-money/shared";
 
 const CategoryBody = z.object({
   name: z.string().min(1),
-  type: z.enum(["income", "expense"]),
+  type: z.enum(["income", "expense", "transfer"]),
   color: z.string().default("#6366f1"),
   icon: z.string().default("tag"),
   sort_order: z.number().int().default(999),
@@ -33,6 +33,12 @@ export const categoriesRoute = new Hono()
     const existing = db.prepare("SELECT * FROM categories WHERE id = ?").get(id) as unknown as Category | undefined;
     if (!existing) return c.json({ error: "not found" }, 404);
     const b = c.req.valid("json");
+    // Renaming is safe — nothing matches categories by name. Retyping a system
+    // category is not: flipping Transfer to 'expense' would silently pull every
+    // internal money movement back into the spending totals.
+    if (existing.is_system && b.type !== undefined && b.type !== existing.type) {
+      return c.json({ error: "system category type cannot be changed" }, 400);
+    }
     const next = { ...existing, ...b };
     db.prepare("UPDATE categories SET name=@name, type=@type, color=@color, icon=@icon, sort_order=@sort_order WHERE id=@id").run({
       name: next.name,
